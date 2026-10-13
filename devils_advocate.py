@@ -68,18 +68,34 @@ class JudgeResponse(BaseModel):
 # ## Masking filter
 # Applied to the idea before it is sent to any model.
 # Over-masking is accepted (e.g. a version like `1.2.3.4` becomes `[IP]`): it is safe.
+#
+# Known limits:
+# - A secret glued to a preceding letter, digit or `_` can leak in part or whole, because the
+#   patterns need a boundary to know where it starts. Examples: `x2001:db8::1`, `id_fe80::1`,
+#   `host10.0.0.1`, `acct123456789012`, an `AKIA…` key immediately followed by an `xai-…` token.
+#   Keep secrets separated by spaces or punctuation, or add them to `[mask] terms`.
+# - An email whose local part contains one of ``!#$&*/=?^`{|}~`` is masked only after the last
+#   such character (`a!b@example.com` → `a![EMAIL]`). Add the address to `[mask] terms`.
+# - IPv6 in non-standard forms, such as a full address followed by `::port`, may not be masked.
 
 
 # %%
 def _ipv6_span(s: str) -> tuple[int, int] | None:
-    """Span of a valid IPv6 address inside a candidate, ignoring stray leading/trailing colons."""
-    for core in (s, s.rstrip(":"), s.lstrip(":"), s.strip(":")):
+    """Longest valid IPv6 address inside a candidate.
+
+    Tries dropping stray colons at either end (one or all of them), a leading `group:` (as in
+    `ab:2001:…`) and a trailing `:group` (an unbracketed port, as in `…:7334:443` from a log line).
+    Few combinations, so the cost stays linear.
+    """
+    lead, tail = len(s) - len(s.lstrip(":")), len(s.rstrip(":"))
+    starts = {0, 1, lead, s.find(":", lead) + 1}
+    ends = {len(s), len(s) - 1, tail, s.rfind(":", 0, tail)}
+    for start, end in sorted(((a, b) for a in starts for b in ends if b > a), key=lambda ab: ab[0] - ab[1]):
         try:
-            ipaddress.IPv6Address(core)
+            ipaddress.IPv6Address(s[start:end])
         except ValueError:
             continue
-        start = s.index(core)
-        return start, start + len(core)
+        return start, end
     return None
 
 
@@ -91,7 +107,7 @@ PATTERNS = [
     ("ARN", r"\barn:aws[a-z\-]*:[A-Za-z0-9\-]+:[a-z0-9\-]*:\d{0,12}:[^\s\"']+", None),
     # The lookbehind makes matching start only at the beginning of a run (no quadratic backtracking).
     ("EMAIL", r"(?<![\w.+\-'%])[\w.+\-'%]+@[\w\-]+(?:\.[\w\-]+)+\b", None),
-    ("IP", r"(?<![\w.])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,8}(?:(?:\.\d{1,3}){3})?(?!\w)", _ipv6_span),
+    ("IP", r"(?<![\w.])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,10}(?:(?:\.\d{1,3}){3})?(?!\w)", _ipv6_span),
     ("IP", r"\b(?:\d{1,3}\.){3}\d{1,3}\b", None),
     ("ACCOUNT_ID", r"\b\d{12}\b|\b\d{4}-\d{4}-\d{4}\b", None),
 ]
@@ -105,8 +121,12 @@ def _spans(text: str, terms: list[str]) -> list[tuple[int, int, str]]:
             if span:
                 spans.append((m.start() + span[0], m.start() + span[1], name))
     if terms:
-        terms_re = "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True))
-        spans += [(m.start(), m.end(), "TERM") for m in re.finditer(terms_re, text, re.IGNORECASE)]
+        # The lookahead reports a match at every position, so overlapping occurrences are all found
+        # (longest term first at each position); the merge in `mask` then joins terms that overlap,
+        # e.g. "Falcon X" and "X Corp" in "Falcon X Corp".
+        # Any run of whitespace matches the spaces in a term ("Project Falcon" across a line break).
+        alternatives = "|".join(r"\s+".join(map(re.escape, t.split())) for t in sorted(terms, key=len, reverse=True))
+        spans += [(*m.span(1), "TERM") for m in re.finditer(f"(?=({alternatives}))", text, re.IGNORECASE)]
     return spans
 
 

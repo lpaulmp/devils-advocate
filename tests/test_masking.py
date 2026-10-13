@@ -42,9 +42,23 @@ def test_secret_is_masked(secret, placeholder):
     ("host:2001:db8::1", "host:[IP]"),               # IPv6 preceded by ':'
     ("KEY_" + "sk-" + "a" * 20, "KEY_[TOKEN]"),       # glued to a word character
     ("x" + "AKIA" + "ABCDEFGHIJKLMNOP", "x[AWS_KEY]"),
+    ("conn 2001:db8:85a3:0:0:8a2e:370:7334:443 ok", "conn [IP]:443 ok"),  # full IPv6 + port
+    ("net 2001:db8::: x", "net [IP]: x"),                                   # '::' followed by ':'
+    ("x 2001:db8::1:: e", "x [IP]:: e"),                                    # two stray colons after
+    ("s ::2001:db8::1 e", "s ::[IP] e"),                                    # two stray colons before
+    ("ab:2001:db8:85a3:0:0:8a2e:370:7334", "ab:[IP]"),                      # glued with ':'
 ])
 def test_secret_in_context_is_masked(text, expected):
     assert da.mask(text) == (expected, 1)
+
+
+@pytest.mark.parametrize("address", ["2001:db8::1", "fe80::1ff:fe23:4567:890a", "2001:db8:85a3:0:0:8a2e:370:7334"])
+@pytest.mark.parametrize("prefix", ["", " ", "host:", "::", "(", "ab:"])
+@pytest.mark.parametrize("suffix", ["", " ", ":", "::", ":443", ").", "/64"])
+def test_ipv6_never_appears_in_output(prefix, address, suffix):
+    masked, n = da.mask(f"{prefix}{address}{suffix}")
+    assert address not in masked
+    assert n == 1
 
 
 @pytest.mark.parametrize("text", [
@@ -80,6 +94,22 @@ def test_terms_do_not_corrupt_placeholders():
 def test_overlapping_terms_counted_once():
     text, n = da.mask("acme corp", ["acme", "acme corp"])
     assert (text, n) == ("[TERM]", 1)
+
+
+@pytest.mark.parametrize("text,terms", [
+    ("Falcon X Corp", ["Falcon X", "X Corp"]),  # overlapping, neither contains the other
+    ("aaa", ["aa"]),                            # a term overlapping itself
+    ("Project\nFalcon", ["Project Falcon"]),    # hard-wrapped line
+    ("Project  Falcon", ["Project Falcon"]),    # double space
+])
+def test_overlapping_terms_hidden_whole(text, terms):
+    assert da.mask(text, terms) == ("[TERM]", 1)
+
+
+def test_many_terms_are_fast():
+    start = time.perf_counter()
+    da.mask("x " * 50000, [f"term{i}" for i in range(2000)])
+    assert time.perf_counter() - start < 1
 
 
 @pytest.mark.parametrize("text,term", [
