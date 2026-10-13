@@ -142,7 +142,8 @@ def test_live_rounds_stop_at_rounds_and_reserve_the_judge(live):
     da.main(["--rounds", "2", "an idea"])
     out = live.out.getvalue()
     assert len(live.claude.requests) == 2 and len(live.grok.requests) == 2
-    assert "calls: 4/5" in out  # the fifth call is the Judge's
+    assert "calls: 5/5" in out  # the fifth call is the Judge's
+    assert len(live.claude.judge.requests) == 1
     assert "Beam (top 3): O1, O2" in out
 
 
@@ -151,8 +152,9 @@ def test_live_rounds_cap_stops_the_run_before_rounds_do(live):
     live.claude.queue = [critic_response("nope"), critic_response(ROUND), critic_response("nope"), critic_response(ROUND)]
     da.main(["--rounds", "2", "an idea"])
     out = live.out.getvalue()
-    assert "calls: 4/5" in out
+    assert "calls: 5/5" in out  # 4 for the rounds + the Judge's reserved call
     assert "Round 2: Critic failed (call cap reached" in out
+    assert len(live.claude.judge.requests) == 1
     assert len(live.claude.requests) == 3 and len(live.grok.requests) == 1
 
 
@@ -171,8 +173,9 @@ def test_live_rounds_one_round_with_a_critic_retry_still_leaves_the_judge(live):
     live.claude.queue = [critic_response("nope"), critic_response(ROUND)]
     da.main(["--rounds", "1", "an idea"])
     out = live.out.getvalue()
-    assert "calls: 2/3" in out
+    assert "calls: 3/3" in out  # Critic + retry + the Judge's reserved call
     assert "Auditor failed (call cap reached" in out  # cap 3 minus the Judge's reserve
+    assert len(live.claude.judge.requests) == 1
     assert "unaudited" in out
 
 
