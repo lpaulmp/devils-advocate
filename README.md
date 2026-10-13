@@ -37,6 +37,11 @@ terms = ["Project Falcon", "internal-db"]
 ```
 The tool prints how many replacements were made.
 
+**Known limits:**
+- A secret glued to a preceding letter, digit or `_` (e.g. `x2001:db8::1`, `id_123456789012`) can leak in part or whole. Keep secrets separated by spaces or punctuation, or add them to `terms`.
+- An email whose local part contains a character such as `!`, `#` or `/` (e.g. `a!b@example.com`) is masked only after that character. Add the address to `terms`.
+- IPv6 in non-standard forms (e.g. a full address followed by `::port`) may not be masked.
+
 ## Español
 
 Un agente de línea de comandos que busca razones por las que una idea o arquitectura **no** sería buena: premisas ocultas, modos de fallo y casos límite. Claude critica, Grok audita la crítica y un juez escribe un informe priorizado.
@@ -66,3 +71,8 @@ Cada objeción recibe dos notas del 1 al 5:
 
 ### Privacidad
 Antes de enviar texto a un modelo se enmascara: claves de AWS, tokens `sk-`/`xai-`, direcciones IPv4/IPv6, ARNs, IDs de cuenta de 12 dígitos, emails y tus propios términos de `~/.config/devils-advocate/config.toml` (ver el ejemplo de arriba). La herramienta muestra cuántos reemplazos hizo.
+
+**Límites conocidos:**
+- Un secreto pegado a una letra, dígito o `_` anterior (p. ej. `x2001:db8::1`, `id_123456789012`) puede filtrarse en parte o entero. Separa los secretos con espacios o puntuación, o añádelos a `terms`.
+- Un email cuya parte local contiene un carácter como `!`, `#` o `/` (p. ej. `a!b@example.com`) solo se enmascara después de ese carácter. Añade la dirección a `terms`.
+- IPv6 en formas no estándar (p. ej. una dirección completa seguida de `::puerto`) puede no enmascararse.
