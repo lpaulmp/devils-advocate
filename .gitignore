@@ -1,0 +1,16 @@
+# secrets / local config
+config.toml
+.env
+history/
+
+# local-only tooling and docs (never published)
+.claude/
+CLAUDE.md
+SPEC.md
+reviews/
+
+# python / OS
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
