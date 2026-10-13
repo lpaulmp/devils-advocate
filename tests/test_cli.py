@@ -46,10 +46,10 @@ def test_only_masked_text_reaches_roles(out, monkeypatch, tmp_path):
     (tmp_path / "config.toml").write_text('[mask]\nterms = ["Falcon"]\n', encoding="utf-8")
     seen = []
     original = da.simulate_critic
-    monkeypatch.setattr(da, "simulate_critic", lambda idea: seen.append(idea) or original(idea))
+    monkeypatch.setattr(da, "simulate_critic", lambda idea, focus=(): seen.append(idea) or original(idea, focus))
 
     da.main(["--dry-run", f"Falcon uses {FAKE_KEY} on 10.0.0.1"])
-    assert seen == ["[TERM] uses [AWS_KEY] on [IP]"]
+    assert seen and all(idea == "[TERM] uses [AWS_KEY] on [IP]" for idea in seen)
     assert "Masking: 3 replacement(s)" in out.getvalue()
 
 
@@ -61,7 +61,7 @@ def test_no_output_contains_a_secret(out):
 
 
 def test_model_text_is_not_parsed_as_markup(out, monkeypatch):
-    def critic(idea):
+    def critic(idea, focus=()):
         return da.CriticResponse(objections=[
             da.Objection(id="O1", kind="premise", text="[simulated] a [/b] b :smile:", severity=1, probability=1),
         ])
