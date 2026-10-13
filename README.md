@@ -6,15 +6,16 @@
 
 A command-line agent that looks for reasons why an idea or architecture would **not** be a good one: hidden premises, failure modes and edge cases. Claude critiques, Grok audits the critique, and a judge writes a prioritized report.
 
-> **Status:** stage 4. Critic (Claude), Auditor (Grok) and Judge (Claude) make real calls, and the report is saved. Cost tracking and `--configure` come in stage 5. `--dry-run` makes no API calls.
+> **Status:** stage 5. Critic (Claude), Auditor (Grok) and Judge (Claude) make real calls within a USD budget, and the report is saved. `--dry-run` makes no API calls.
 
 ### Usage
 ```bash
 pip install -r requirements.txt
 python devils_advocate.py --dry-run "Move our database to a single large server"
 python devils_advocate.py --dry-run -f idea.md --rounds 1
-export ANTHROPIC_API_KEY=... XAI_API_KEY=...   # live run: Claude (Critic) and Grok (Auditor)
+python devils_advocate.py --configure   # store both API keys in the keychain, create config.toml
 python devils_advocate.py "Move our database to a single large server"
+python devils_advocate.py --budget 0.05 -f idea.md
 python -m pytest -q
 ```
 
@@ -32,6 +33,20 @@ If the Auditor fails (for example, a wrong xAI key), the run still shows the Cri
 
 ### Report
 The Judge reads every objection with its verdict and writes the synthesis: consensus, disagreements, a steelman (the strongest case *for* the idea), open questions and a global verdict (*proceed*, *adjust* or *drop*). The report is printed and saved as `~/devils-advocate/history/YYYY-MM-DD_HHMM_<slug>.md`, readable only by you. It contains the **masked** idea, never the original. If the Judge fails, the report is saved without the synthesis. If Claude declines the request for some safety categories, the API retries it on another Claude model and the report says so.
+
+### Keys, prices and budget
+`--configure` asks for the Anthropic and xAI keys without showing them and stores them in the macOS keychain (`ANTHROPIC_API_KEY` and `XAI_API_KEY` also work). It also creates `~/.config/devils-advocate/config.toml` if it does not exist.
+
+Prices are **not** built in: copy them (USD per million tokens) from each console's pricing page into `config.toml`:
+```toml
+[prices]
+"claude-haiku-5-5" = { input = ..., output = ... }
+"grok-4.20-0309-non-reasoning" = { input = ..., output = ... }
+"claude-sonnet-5-5" = { input = ..., output = ... }
+```
+Before each call the tool estimates its worst-case cost (estimated input plus the full output cap). If the call could take the run over `--budget` (default $0.10), the rounds stop and the report is written with what exists; a share of the budget is always kept for the Judge. If the budget cannot cover even the first Critic call plus the Judge's share, the run stops before any call and no report is written. The budget is a best-effort cap: the input size is estimated, a Judge fallback is priced as the requested model, and a call that times out is not counted. Use a non-reasoning Auditor model. At the end it prints a cost table per role and model. A model without a price is counted in tokens only, and the tool warns that the budget cannot cover it.
+
+Also set a spend limit on console.anthropic.com and turn auto top-up **off** on console.x.ai.
 
 ### How objections are ranked
 Every objection gets two scores from 1 to 5:
@@ -63,15 +78,16 @@ The tool prints how many replacements were made.
 
 Un agente de línea de comandos que busca razones por las que una idea o arquitectura **no** sería buena: premisas ocultas, modos de fallo y casos límite. Claude critica, Grok audita la crítica y un juez escribe un informe priorizado.
 
-> **Estado:** etapa 4. Crítico (Claude), Auditor (Grok) y Juez (Claude) hacen llamadas reales y el informe se guarda. El control de costes y `--configure` llegan en la etapa 5. `--dry-run` no hace llamadas a APIs.
+> **Estado:** etapa 5. Crítico (Claude), Auditor (Grok) y Juez (Claude) hacen llamadas reales dentro de un presupuesto en USD, y el informe se guarda. `--dry-run` no hace llamadas a APIs.
 
 ### Uso
 ```bash
 pip install -r requirements.txt
 python devils_advocate.py --dry-run "Mover nuestra base de datos a un único servidor grande"
 python devils_advocate.py --dry-run -f idea.md --rounds 1
-export ANTHROPIC_API_KEY=... XAI_API_KEY=...   # ejecución real: Claude (Crítico) y Grok (Auditor)
+python devils_advocate.py --configure   # guarda las dos claves en el llavero y crea config.toml
 python devils_advocate.py "Mover nuestra base de datos a un único servidor grande"
+python devils_advocate.py --budget 0.05 -f idea.md
 python -m pytest -q
 ```
 
@@ -83,6 +99,13 @@ Si el Auditor falla (por ejemplo, una clave de xAI incorrecta), se muestran igua
 
 ### Informe
 El Juez lee todas las objeciones con su veredicto y escribe la síntesis: consenso, desacuerdos, un *steelman* (el mejor argumento *a favor* de la idea), preguntas abiertas y un veredicto global (*proceed*, *adjust* o *drop*). El informe se muestra y se guarda en `~/devils-advocate/history/AAAA-MM-DD_HHMM_<slug>.md`, legible solo por ti. Contiene la idea **enmascarada**, nunca la original. Si el Juez falla, el informe se guarda sin la síntesis. Si Claude rechaza la petición por ciertas categorías de seguridad, la API la reintenta en otro modelo de Claude y el informe lo indica.
+
+### Claves, precios y presupuesto
+`--configure` pide las claves de Anthropic y xAI sin mostrarlas y las guarda en el llavero de macOS (también sirven `ANTHROPIC_API_KEY` y `XAI_API_KEY`). Además crea `~/.config/devils-advocate/config.toml` si no existe.
+
+Los precios **no** vienen incluidos: cópialos (USD por millón de tokens) de la página de precios de cada consola en `config.toml`, en la sección `[prices]` (ver el ejemplo de arriba). Antes de cada llamada se estima su coste máximo (entrada estimada más el límite de salida completo). Si la llamada pudiera superar `--budget` (0,10 USD por defecto), las rondas se detienen y el informe se escribe con lo que haya; siempre se reserva una parte del presupuesto para el Juez. Si el presupuesto no cubre ni la primera llamada del Crítico más la parte del Juez, se detiene antes de cualquier llamada y no se escribe informe. El presupuesto es un límite aproximado: el tamaño de la entrada se estima, un fallback del Juez se valora al precio del modelo pedido y una llamada que agota el tiempo no se cuenta. Usa un modelo de Auditor sin razonamiento. Al final se muestra una tabla de costes por rol y modelo. Un modelo sin precio se cuenta solo en tokens, y la herramienta avisa de que el presupuesto no lo cubre.
+
+Pon también un límite de gasto en console.anthropic.com y desactiva la recarga automática en console.x.ai.
 
 ### Cómo se ordenan las objeciones
 Cada objeción recibe dos notas del 1 al 5:

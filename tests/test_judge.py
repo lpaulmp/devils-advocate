@@ -178,12 +178,15 @@ def test_build_report_sections_and_one_line_fields():
     ledger, beam = entries()
     ledger[0].objection.text = "Line one\nline two"
     judge = da.JudgeResponse(**{**VALID_JUDGE, "steelman": "Strong\n\ncase"})
-    session = da.Session(max_calls=5, calls=4, usage={"judge": {"input_tokens": 10, "output_tokens": 5}})
+    session = da.Session(max_calls=5, calls=4, budget=0.10, prices={"claude-sonnet-5-5": {"input": 2.0, "output": 10.0}})
+    session.record("judge", 1000, 500, "claude-sonnet-5-5")
+    session.record("judge", 10, 5, "unpriced-model")
+    session.unpriced.add("unpriced-model")
     r = da.RunResult("masked idea", 2, "live", {"critic": "c", "auditor": "a", "judge": "claude-sonnet-5-5"}, 2,
                      ledger, beam, ["Converged in round 2."], session, judge, "claude-sonnet-5")
     text = da.build_report(r, datetime(2026, 10, 12, 21, 30))
     for section in ("## Idea (masked)", "## Verdict: ADJUST", "## Consensus", "## Disagreements", "## Steelman",
-                    "## Open questions", "## Objections", "## Notes", "## Usage"):
+                    "## Open questions", "## Objections", "## Notes", "## Usage and cost"):
         assert section in text
     assert "> masked idea" in text
     assert "- ★ **O1** (round 1, premise, 4×3=12, valid) Line one line two — *Holds.*" in text
@@ -191,6 +194,10 @@ def test_build_report_sections_and_one_line_fields():
     assert "Strong case" in text
     assert "*Served by fallback model `claude-sonnet-5`.*" in text
     assert "calls: 4/5" in text
+    assert "| judge | `claude-sonnet-5-5` | 1000 | 500 | $0.0070 |" in text
+    assert "| judge | `unpriced-model` | 10 | 5 | — |" in text
+    assert "**$0.0070** of $0.10" in text
+    assert "No price in config.toml for: `unpriced-model`" in text
 
 
 # --- live runs ---------------------------------------------------------------------------------------
