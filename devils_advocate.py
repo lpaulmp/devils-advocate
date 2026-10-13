@@ -1,11 +1,12 @@
 # %% [markdown]
 # # Devil's Advocate — Claude + Grok
 # Takes an idea and looks for reasons why it would **not** be a good one.
-# Stage 4: Critic (Claude) and Auditor (Grok) run in rounds with beam-search pruning, the Judge (Claude)
-# writes the synthesis, and the report is printed and saved as Markdown.
+# Critic (Claude) and Auditor (Grok) run in rounds with beam-search pruning, the Judge (Claude) writes the
+# synthesis, and the report is printed and saved as Markdown. Every call is checked against a USD budget.
 
 # %%
 import argparse
+import getpass
 import ipaddress
 import json
 import math
@@ -190,7 +191,7 @@ def load_config(path: str | Path | None = None) -> dict:
         cfg = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
         raise ValueError(f"cannot read {path.name}: {e}") from e
-    for table in ("mask", "models"):
+    for table in ("mask", "models", "prices"):
         if not isinstance(cfg.get(table, {}), dict):
             raise ValueError(f"{path.name}: [{table}] must be a table")
     terms = cfg.get("mask", {}).get("terms", [])
@@ -198,6 +199,11 @@ def load_config(path: str | Path | None = None) -> dict:
         raise ValueError(f"{path.name}: [mask] terms must be a list of strings")
     if not all(isinstance(m, str) and m for m in cfg.get("models", {}).values()):
         raise ValueError(f"{path.name}: [models] values must be model names")
+    for model, price in cfg.get("prices", {}).items():
+        ok = isinstance(price, dict) and set(price) == {"input", "output"} and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0 for v in price.values())
+        if not ok:
+            raise ValueError(f'{path.name}: [prices] "{model}" must be {{ input = <USD per M>, output = <USD per M> }}')
     return cfg
 
 
@@ -247,7 +253,7 @@ def simulate_judge(idea: str, ledger, beam) -> JudgeResponse:
 DEFAULT_MODELS = {"critic": "claude-haiku-5-5", "auditor": "grok-4.20-0309-non-reasoning", "judge": "claude-sonnet-5-5"}
 MAX_TOKENS = {"critic": 600, "auditor": 500, "judge": 700}
 XAI_BASE_URL = "https://api.x.ai/v1"
-MAX_IDEA_CHARS = 20_000  # about 5k tokens; a cost guard until budgets arrive in stage 5
+MAX_IDEA_CHARS = 20_000  # about 5k tokens
 API_TIMEOUT = 60  # seconds
 KEYRING_USER = "api_key"
 API_KEYS = {
@@ -302,23 +308,74 @@ class CallLimitReached(RuntimeError):
     """The per-run call cap would be exceeded."""
 
 
+class BudgetExceeded(CallLimitReached):
+    """The next call could take the run over --budget."""
+
+
+def estimate_tokens(*texts: str) -> int:
+    """Heuristic input estimate: 3 ASCII characters per token, and 2 tokens per non-ASCII character
+    (accents, CJK, emoji are tokenized more densely)."""
+    text = "".join(texts)
+    non_ascii = sum(1 for ch in text if ord(ch) > 127)
+    return math.ceil((len(text) - non_ascii) / 3) + 2 * non_ascii + 50
+
+
 @dataclass
 class Session:
-    """Calls and token usage for one run (costs are added in stage 5)."""
+    """Calls, token usage and cost for one run.
+
+    Before each call `start_call` checks the call cap and the budget with a worst-case estimate (estimated
+    input + the full max_tokens of output). Models without a price in config.toml cost 0 here: they are
+    listed in `unpriced` and the run warns that the budget cannot cover them.
+
+    Known limits: the input estimate is a heuristic, not the provider's tokenizer; a Judge fallback is
+    budgeted as a second attempt at the requested model's price (the server chooses the fallback model);
+    a call that times out, or a reply without usage, adds nothing to `spent()`; for reasoning models, the
+    provider's output count is trusted as reported. Each of these can usually exceed the budget by at most
+    one or two calls' worst case."""
     max_calls: int
     calls: int = 0
-    usage: dict[str, dict[str, int]] = field(default_factory=dict)
+    usage: dict[str, dict[str, int]] = field(default_factory=dict)  # per role
+    by_model: dict[tuple[str, str], dict[str, int]] = field(default_factory=dict)  # per (role, model)
+    budget: float = math.inf
+    prices: dict[str, dict[str, float]] = field(default_factory=dict)
+    judge_reserve: float = 0.0  # USD kept free for the Judge while the rounds run
+    unpriced: set[str] = field(default_factory=set)
 
-    def start_call(self, reserve: int = 0):
-        """Count one API call; `reserve` keeps that many calls free (the Judge's) for later."""
+    def price(self, model: str) -> dict[str, float] | None:
+        # Responses may carry a dated id (claude-x-20261001) for a priced alias.
+        return self.prices.get(model) or self.prices.get(re.sub(r"-\d{8}$", "", model))
+
+    def cost(self, model: str, input_tokens: int, output_tokens: int) -> float | None:
+        p = self.price(model)
+        return None if p is None else (input_tokens * p["input"] + output_tokens * p["output"]) / 1_000_000
+
+    def spent(self) -> float:
+        return sum(self.cost(m, u["input_tokens"], u["output_tokens"]) or 0.0 for (_, m), u in self.by_model.items())
+
+    def start_call(self, reserve: int = 0, model: str = "", input_tokens: int = 0, max_output: int = 0, attempts: int = 1):
+        """Count one API call; `reserve` keeps that many calls (and the Judge's budget share) free for later."""
         if self.calls + reserve >= self.max_calls:
             raise CallLimitReached(f"call cap reached ({self.max_calls}, {reserve} reserved)")
+        estimate = self.cost(model, input_tokens, max_output) if model else 0.0
+        if estimate is None:
+            self.unpriced.add(model)
+            estimate = 0.0
+        estimate *= attempts
+        keep = self.judge_reserve if reserve else 0.0
+        if self.spent() + estimate + keep > self.budget:
+            kept = f" + ${keep:.4f} kept for the Judge" if keep else ""
+            raise BudgetExceeded(f"budget would be exceeded: ${self.spent():.4f} spent + ${estimate:.4f} "
+                                 f"estimated{kept} > ${self.budget:.2f}")
         self.calls += 1
 
-    def record(self, role: str, input_tokens: int, output_tokens: int):
-        totals = self.usage.setdefault(role, {"input_tokens": 0, "output_tokens": 0})
-        totals["input_tokens"] += input_tokens
-        totals["output_tokens"] += output_tokens
+    def record(self, role: str, input_tokens: int, output_tokens: int, model: str = ""):
+        if model and self.price(model) is None:  # e.g. a Judge fallback model that start_call never saw
+            self.unpriced.add(model)
+        for totals in (self.usage.setdefault(role, {"input_tokens": 0, "output_tokens": 0}),
+                       self.by_model.setdefault((role, model), {"input_tokens": 0, "output_tokens": 0})):
+            totals["input_tokens"] += input_tokens
+            totals["output_tokens"] += output_tokens
 
 
 def get_api_key(provider: str) -> str | None:
@@ -389,11 +446,12 @@ def call_critic(client, session: Session, idea: str, model: str = DEFAULT_MODELS
         thinking={"type": "disabled"},
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": anthropic.transform_schema(CriticResponse)}},
     )
+    estimate = estimate_tokens(CRITIC_SYSTEM, content, json.dumps(request["output_config"]))
     problem = ""
     for _ in range(2):  # first attempt + one retry
-        session.start_call(reserve=1)
+        session.start_call(reserve=1, model=model, input_tokens=estimate, max_output=MAX_TOKENS["critic"])
         response = client.messages.create(**request)
-        session.record("critic", response.usage.input_tokens, response.usage.output_tokens)
+        session.record("critic", response.usage.input_tokens, response.usage.output_tokens, model)
         if response.stop_reason == "refusal":
             raise RoleError("the Critic model declined the request")
         text = "".join(b.text for b in response.content if b.type == "text")
@@ -450,12 +508,13 @@ def call_auditor(client, session: Session, idea: str, objections: list[Objection
         response_format={"type": "json_schema", "json_schema": {"name": "audit", "schema": auditor_schema(), "strict": True}},
     )
     expected = sorted(o.id for o in objections)
+    estimate = estimate_tokens(AUDITOR_SYSTEM, content, json.dumps(request["response_format"]))
     problem = ""
     for _ in range(2):  # first attempt + one retry
-        session.start_call(reserve=1)
+        session.start_call(reserve=1, model=model, input_tokens=estimate, max_output=MAX_TOKENS["auditor"])
         response = client.chat.completions.create(**request)
         if response.usage:
-            session.record("auditor", response.usage.prompt_tokens, response.usage.completion_tokens)
+            session.record("auditor", response.usage.prompt_tokens, response.usage.completion_tokens, model)
         if not response.choices:
             problem = "no choices in the response"
             continue
@@ -607,15 +666,42 @@ def answer_text(response) -> str:
     return "".join(b.text for b in blocks[last + 1:] if b.type == "text")
 
 
+# Room for the ledger when the Judge's budget share is set aside before the rounds. A full 3-round ledger can
+# be larger; under a tight budget the Judge may then be refused at the end (the budget is still respected).
+JUDGE_LEDGER_TOKENS = 3000
+
+
+def judge_input_tokens(request: dict) -> int:
+    return estimate_tokens(request["system"], request["messages"][0]["content"], json.dumps(request["output_config"]))
+
+
+def judge_reserve(session: Session, model: str, idea: str) -> float:
+    """Worst-case Judge cost, kept free while the rounds run (two attempts, as for a fallback)."""
+    request = judge_request(model, idea, [], [])
+    cost = session.cost(model, judge_input_tokens(request) + JUDGE_LEDGER_TOKENS, MAX_TOKENS["judge"])
+    return 2 * (cost or 0.0)
+
+
+def record_judge_usage(session: Session, response, model: str):
+    """After a fallback, `usage.iterations` lists each model that ran; record them separately (prices differ)."""
+    iterations = getattr(response.usage, "iterations", None) or []
+    if not iterations:
+        session.record("judge", response.usage.input_tokens, response.usage.output_tokens, model)
+    for it in iterations:
+        session.record("judge", it.input_tokens, it.output_tokens, getattr(it, "model", None) or model)
+
+
 def call_judge(client, session: Session, idea: str, ledger: list[Entry], beam: list[Entry],
                model: str = DEFAULT_MODELS["judge"]) -> tuple[JudgeResponse, str]:
     """Return the synthesis and the fallback model that served it ("" when the requested model did)."""
     request = judge_request(model, idea, ledger, beam)
+    estimate = judge_input_tokens(request)
     problem = ""
-    for _ in range(2):  # first attempt + one retry, if the cap still allows it
-        session.start_call()
+    for _ in range(2):  # first attempt + one retry, if the cap and the budget still allow it
+        # A fallback bills the declining model and the fallback model: budget two attempts.
+        session.start_call(model=model, input_tokens=estimate, max_output=MAX_TOKENS["judge"], attempts=2)
         response = client.beta.messages.create(**request)
-        session.record("judge", response.usage.input_tokens, response.usage.output_tokens)
+        record_judge_usage(session, response, model)
         if response.stop_reason == "refusal":
             raise RoleError("the Judge model declined the request")
         try:
@@ -721,10 +807,25 @@ def build_report(r: RunResult, now: datetime) -> str:
     lines.append("")
     if r.notes:
         lines += ["## Notes", "", *[f"- {md_text(n)}" for n in r.notes], ""]
-    if r.session.usage:
-        lines += ["## Usage", "", *[f"- {role}: {u['input_tokens']} input / {u['output_tokens']} output tokens"
-                                    for role, u in r.session.usage.items()], ""]
+    if r.session.by_model:
+        lines += ["## Usage and cost", "", "| role | model | input tokens | output tokens | cost (USD) |",
+                  "|---|---|---:|---:|---:|"]
+        for role, model, u, cost in cost_rows(r.session):
+            lines.append(f"| {role} | `{model}` | {u['input_tokens']} | {u['output_tokens']} | {format_cost(cost)} |")
+        lines += [f"| **total** | | | | **{format_cost(r.session.spent())}** of ${r.session.budget:.2f} |", ""]
+        if r.session.unpriced:
+            lines += ["No price in config.toml for: " + ", ".join(f"`{m}`" for m in sorted(r.session.unpriced))
+                      + " (token counts only).", ""]
     return "\n".join(lines)
+
+
+def cost_rows(session: Session):
+    for (role, model), u in session.by_model.items():
+        yield role, model, u, session.cost(model, u["input_tokens"], u["output_tokens"])
+
+
+def format_cost(cost: float | None) -> str:
+    return "—" if cost is None else f"${cost:.4f}"
 
 
 def save_report(text: str, path: Path):
@@ -808,19 +909,28 @@ def render_judge(judge: JudgeResponse, simulated: bool):
 
 
 def render_usage(session: Session):
-    for role, u in session.usage.items():
-        console.print(f"[dim]{role}: {u['input_tokens']} input / {u['output_tokens']} output tokens[/dim]")
+    if session.by_model:
+        table = Table(title="Usage and cost")
+        for col, justify in (("role", "left"), ("model", "left"), ("input", "right"), ("output", "right"), ("cost", "right")):
+            table.add_column(col, justify=justify)
+        for role, model, u, cost in cost_rows(session):
+            table.add_row(role, Text(model), str(u["input_tokens"]), str(u["output_tokens"]), format_cost(cost))
+        table.add_row("total", "", "", "", f"{format_cost(session.spent())} of ${session.budget:.2f}")
+        console.print(table)
+    if session.unpriced:
+        console.print(Text("No price in config.toml for: " + ", ".join(sorted(session.unpriced))
+                           + " (token counts only).", style="yellow"))
     console.print(f"[dim]calls: {session.calls}/{session.max_calls}[/dim]")
 
 
-def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms=None, models=None):
+def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms=None, models=None, prices=None):
     if local and not dry_run:
         fail("--local real runs are not implemented yet. Use --dry-run.")
     if len(idea) > MAX_IDEA_CHARS:
         fail(f"Idea too long: {len(idea)} characters (max {MAX_IDEA_CHARS}).")
     masked, n = mask(idea, terms)
     console.print(f"[dim]Masking: {n} replacement(s).[/dim]")
-    session = Session(max_calls=2 * rounds + 1)
+    session = Session(max_calls=2 * rounds + 1, budget=budget, prices=dict(prices or {}))
     mode = "dry-run" if dry_run else "live"
     console.print(f"[dim]{mode} · rounds={rounds} · max calls={session.max_calls} · budget=${budget:.2f}[/dim]")
 
@@ -831,8 +941,12 @@ def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms
 
         auditor_fn = simulate_auditor
     else:
-        console.print("[yellow]Note: --budget is not enforced until stage 5; max_tokens and the call cap limit the cost.[/yellow]")
         models = {**DEFAULT_MODELS, **(models or {})}
+        unpriced = [m for m in dict.fromkeys(models.values()) if session.price(m) is None]
+        if unpriced:
+            console.print(Text(f"Warning: no price in config.toml for {', '.join(unpriced)}: its cost is not counted and "
+                               "--budget cannot cover it (token counts only). See --configure.", style="yellow"))
+        session.judge_reserve = judge_reserve(session, models["judge"], masked)
         try:  # both keys are checked before any call is made
             claude, grok = make_anthropic_client(), make_xai_client()
         except RoleError as e:
@@ -877,17 +991,63 @@ def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms
     try:
         path = report_path(masked, now)
         save_report(build_report(result, now), path)
-        shown = str(path).replace(str(Path.home()), "~", 1)  # no home path (user name) in the output
-        console.print(f"[green]Report saved:[/green] {escape(shown)}", soft_wrap=True)  # keep the path copyable
+        console.print(f"[green]Report saved:[/green] {escape(shown_path(path))}", soft_wrap=True)  # keep the path copyable
     except OSError as e:
         console.print(f"[yellow]Could not save the report: {escape(e.strerror or str(e))}[/yellow]")
     return result
 
 
+CONFIG_TEMPLATE = """# devils-advocate configuration (this file is private: keep it out of git)
+
+[models]
+# critic = "claude-haiku-5-5"
+# auditor = "grok-4.20-0309-non-reasoning"
+# judge = "claude-sonnet-5-5"
+
+[mask]
+terms = []  # extra words to hide before anything is sent, e.g. ["Project Falcon"]
+
+# USD per million tokens. Copy them from each console's pricing page: there are no defaults.
+# Without a price, a model's cost is not counted and --budget cannot cover it.
+[prices]
+# "claude-haiku-5-5" = { input = 0.0, output = 0.0 }
+"""
+
+
+def shown_path(path: Path) -> str:
+    return str(path).replace(str(Path.home()), "~", 1)  # no home path (user name) in the output
+
+
+def configure():
+    """Store API keys in the keychain (asked with getpass, never echoed) and create a config template."""
+    for provider, (service, env_var) in API_KEYS.items():
+        key = getpass.getpass(f"{provider} API key (Enter keeps the current one): ").strip()
+        if not key:
+            console.print(f"{provider}: unchanged")
+            continue
+        try:
+            keyring.set_password(service, KEYRING_USER, key)
+        except KeyringError as e:
+            fail(f"Could not store the {provider} key in the keychain ({type(e).__name__}). Use {env_var} instead.")
+        console.print(f"{provider}: stored in the keychain ({service})")
+    path = Path(CONFIG_PATH).expanduser()
+    if path.exists():
+        console.print(f"Config: {escape(shown_path(path))} already exists (not changed).", soft_wrap=True)
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(CONFIG_TEMPLATE)
+    except OSError as e:  # strerror only: the exception text would include the home path
+        fail(f"Could not create the config template: {e.strerror or type(e).__name__}")
+    console.print(f"Config template created: {escape(shown_path(path))}. Add your prices there.", soft_wrap=True)
+
+
 def main(argv=None):
     args = parse_args(argv)
     if args.configure:
-        console.print("[yellow]--configure is implemented in stage 5.[/yellow]")
+        configure()
         return
     idea = read_idea(args)
     try:
@@ -895,7 +1055,7 @@ def main(argv=None):
     except ValueError as e:
         fail(str(e))
     terms = cfg.get("mask", {}).get("terms", [])
-    run(idea, args.rounds, args.budget, args.dry_run, args.local, terms, cfg.get("models", {}))
+    run(idea, args.rounds, args.budget, args.dry_run, args.local, terms, cfg.get("models", {}), cfg.get("prices", {}))
 
 
 if __name__ == "__main__":

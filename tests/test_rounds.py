@@ -1,5 +1,6 @@
 """Rounds and beam-search pruning (stage 3), plus live runs wired to fake clients."""
 import io
+import re
 import socket
 from types import SimpleNamespace
 
@@ -186,7 +187,7 @@ def test_live_run_shows_verdicts_reasons_and_new_edge_cases(live):
     out = live.out.getvalue()
     assert "↳ Holds." in out and "Empty input [x]" in out and "G1" in out
     assert "Converged in round 2" in out
-    assert "auditor: 80 input / 40 output tokens" in out
+    assert re.search(r"auditor\W+grok-4.20-0309-non-reasoning\W+80\W+40\W", out)
 
 
 def test_auditor_receives_only_masked_text(live):
