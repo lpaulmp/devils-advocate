@@ -61,12 +61,12 @@ def test_no_output_contains_a_secret(out):
 def test_model_text_is_not_parsed_as_markup(out, monkeypatch):
     def critic(idea):
         return da.CriticResponse(objections=[
-            da.Objection(id="O1", kind="premise", text="[simulated] a [/b] b", severity=1, probability=1),
+            da.Objection(id="O1", kind="premise", text="[simulated] a [/b] b :smile:", severity=1, probability=1),
         ])
 
     monkeypatch.setattr(da, "simulate_critic", critic)
     da.main(["--dry-run", "x"])
-    assert "[simulated] a [/b] b" in out.getvalue()
+    assert "[simulated] a [/b] b :smile:" in out.getvalue()
 
 
 def test_without_dry_run_exits_non_zero(out):

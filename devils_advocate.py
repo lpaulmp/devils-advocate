@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 console = Console()
 CONFIG_PATH = "~/.config/devils-advocate/config.toml"
@@ -70,57 +71,68 @@ class JudgeResponse(BaseModel):
 
 
 # %%
-def _is_ipv6(s: str) -> bool:
-    try:
-        ipaddress.IPv6Address(s)
-        return True
-    except ValueError:
-        return False
+def _ipv6_span(s: str) -> tuple[int, int] | None:
+    """Span of a valid IPv6 address inside a candidate, ignoring stray leading/trailing colons."""
+    for core in (s, s.rstrip(":"), s.lstrip(":"), s.strip(":")):
+        try:
+            ipaddress.IPv6Address(core)
+        except ValueError:
+            continue
+        start = s.index(core)
+        return start, start + len(core)
+    return None
 
 
-# (name, regex, optional validator). Order matters: ARN before IPv6 (ARNs contain `::`).
+# (name, regex, optional span finder for candidates that need validation).
+# All patterns run on the original text; overlapping matches are merged (see `mask`).
 PATTERNS = [
-    ("AWS_KEY", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", None),
-    ("TOKEN", r"\b(?:sk|xai)-[A-Za-z0-9_\-]{16,}", None),
+    ("AWS_KEY", r"(?<![A-Z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])", None),
+    ("TOKEN", r"(?<![A-Za-z0-9])(?:sk|xai)-[A-Za-z0-9_\-]{16,}", None),
     ("ARN", r"\barn:aws[a-z\-]*:[A-Za-z0-9\-]+:[a-z0-9\-]*:\d{0,12}:[^\s\"']+", None),
-    ("EMAIL", r"\b[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+\b", None),
-    ("IP", r"(?<![\w:])(?:[0-9A-Fa-f]{0,4}:){2,7}(?:[0-9A-Fa-f]{1,4}|(?:\d{1,3}\.){3}\d{1,3})?(?![\w:])", _is_ipv6),
+    # The lookbehind makes matching start only at the beginning of a run (no quadratic backtracking).
+    ("EMAIL", r"(?<![\w.+\-'%])[\w.+\-'%]+@[\w\-]+(?:\.[\w\-]+)+\b", None),
+    ("IP", r"(?<![\w.])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,8}(?:(?:\.\d{1,3}){3})?(?!\w)", _ipv6_span),
     ("IP", r"\b(?:\d{1,3}\.){3}\d{1,3}\b", None),
-    ("ACCOUNT_ID", r"\b\d{12}\b", None),
+    ("ACCOUNT_ID", r"\b\d{12}\b|\b\d{4}-\d{4}-\d{4}\b", None),
 ]
-# Capturing group: re.split keeps the placeholders at odd indices.
-PLACEHOLDER = re.compile(r"(\[(?:%s|TERM)\])" % "|".join(sorted({name for name, _, _ in PATTERNS})))
 
 
-def _sub(pattern: str, repl: str, text: str, validate=None, flags=0) -> tuple[str, int]:
-    count = 0
-
-    def replace(m: re.Match) -> str:
-        nonlocal count
-        if validate and not validate(m.group()):
-            return m.group()
-        count += 1
-        return repl
-
-    return re.sub(pattern, replace, text, flags=flags), count
+def _spans(text: str, terms: list[str]) -> list[tuple[int, int, str]]:
+    spans = []
+    for name, pattern, find_span in PATTERNS:
+        for m in re.finditer(pattern, text):
+            span = find_span(m.group()) if find_span else (0, len(m.group()))
+            if span:
+                spans.append((m.start() + span[0], m.start() + span[1], name))
+    if terms:
+        terms_re = "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True))
+        spans += [(m.start(), m.end(), "TERM") for m in re.finditer(terms_re, text, re.IGNORECASE)]
+    return spans
 
 
 def mask(text: str, terms: list[str] | None = None) -> tuple[str, int]:
-    """Return (masked text, number of replacements)."""
-    total = 0
-    for name, pattern, validate in PATTERNS:
-        text, n = _sub(pattern, f"[{name}]", text, validate)
-        total += n
-    terms = sorted({t.strip() for t in terms or [] if t.strip()}, key=len, reverse=True)
-    if not terms:
-        return text, total
-    # One pass over the custom terms, skipping placeholders already inserted.
-    terms_re = "|".join(re.escape(t) for t in terms)
-    parts = PLACEHOLDER.split(text)
-    for i in range(0, len(parts), 2):
-        parts[i], n = _sub(terms_re, "[TERM]", parts[i], flags=re.IGNORECASE)
-        total += n
-    return "".join(parts), total
+    """Return (masked text, number of replacements).
+
+    Patterns and custom terms are all matched on the original text, then overlapping matches are
+    merged into one placeholder named after the longest of them. A term that contains an IP or an
+    account ID is therefore hidden whole, and a term never matches inside a placeholder.
+    """
+    terms = {t.strip() for t in terms or [] if t.strip()}
+    merged: list[list] = []  # [start, end, name, length of the longest match]
+    for start, end, name in sorted(_spans(text, terms)):
+        if merged and start < merged[-1][1]:
+            last = merged[-1]
+            if end - start > last[3]:
+                last[2], last[3] = name, end - start
+            last[1] = max(last[1], end)
+        else:
+            merged.append([start, end, name, end - start])
+    out, pos = [], 0
+    for start, end, name, _ in merged:
+        out += [text[pos:start], f"[{name}]"]
+        pos = end
+    out.append(text[pos:])
+    return "".join(out), len(merged)
 
 
 def load_mask_terms(path: str | Path | None = None) -> list[str]:
@@ -129,9 +141,12 @@ def load_mask_terms(path: str | Path | None = None) -> list[str]:
     if not path.exists():
         return []
     try:
-        terms = tomllib.loads(path.read_text(encoding="utf-8")).get("mask", {}).get("terms", [])
+        mask_cfg = tomllib.loads(path.read_text(encoding="utf-8")).get("mask", {})
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
         raise ValueError(f"cannot read {path.name}: {e}") from e
+    if not isinstance(mask_cfg, dict):
+        raise ValueError(f"{path.name}: [mask] must be a table")
+    terms = mask_cfg.get("terms", [])
     if not isinstance(terms, list) or not all(isinstance(t, str) for t in terms):
         raise ValueError(f"{path.name}: [mask] terms must be a list of strings")
     return terms
@@ -213,12 +228,12 @@ def read_idea(args) -> str:
 
 
 def render(critic: CriticResponse, auditor: AuditorResponse, judge: JudgeResponse):
-    # Model text is escaped: brackets in it must not be read as rich markup.
+    # Model text goes in as Text: no rich markup and no :emoji: codes are interpreted.
     table = Table(title="Objections (simulated)")
     for col in ("id", "kind", "text", "sev×prob"):
         table.add_column(col)
     for o in [*critic.objections, *auditor.new]:
-        table.add_row(escape(o.id), o.kind, escape(o.text), f"{o.severity}×{o.probability}={o.score}")
+        table.add_row(Text(o.id), o.kind, Text(o.text), f"{o.severity}×{o.probability}={o.score}")
     console.print(table)
     console.print(f"[bold]Global verdict (simulated):[/bold] {judge.global_verdict}")
 
