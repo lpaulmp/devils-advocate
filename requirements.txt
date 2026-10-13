@@ -1,3 +1,6 @@
+anthropic>=1.13
+keyring>=25
 pydantic>=2.7
 rich>=13
 pytest>=8
+httpx2  # used by the tests' mock transport; installed with anthropic

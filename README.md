@@ -6,14 +6,22 @@
 
 A command-line agent that looks for reasons why an idea or architecture would **not** be a good one: hidden premises, failure modes and edge cases. Claude critiques, Grok audits the critique, and a judge writes a prioritized report.
 
-> **Status:** stage 1. Only `--dry-run` works (simulated responses, no API calls).
+> **Status:** stage 2. The Critic (Claude) makes real calls; the Auditor and Judge are still simulated. `--dry-run` makes no API calls.
 
 ### Usage
 ```bash
 pip install -r requirements.txt
 python devils_advocate.py --dry-run "Move our database to a single large server"
 python devils_advocate.py --dry-run -f idea.md --rounds 1
+export ANTHROPIC_API_KEY=...   # live run: the Critic calls Claude
+python devils_advocate.py "Move our database to a single large server"
 python -m pytest -q
+```
+
+The Critic uses `claude-haiku-5-5` with at most 600 output tokens per call. Change the model in `config.toml`:
+```toml
+[models]
+critic = "claude-sonnet-5-5"
 ```
 
 ### How objections are ranked
@@ -46,15 +54,19 @@ The tool prints how many replacements were made.
 
 Un agente de línea de comandos que busca razones por las que una idea o arquitectura **no** sería buena: premisas ocultas, modos de fallo y casos límite. Claude critica, Grok audita la crítica y un juez escribe un informe priorizado.
 
-> **Estado:** etapa 1. Solo funciona `--dry-run` (respuestas simuladas, sin llamadas a APIs).
+> **Estado:** etapa 2. El Crítico (Claude) hace llamadas reales; el Auditor y el Juez siguen simulados. `--dry-run` no hace llamadas a APIs.
 
 ### Uso
 ```bash
 pip install -r requirements.txt
 python devils_advocate.py --dry-run "Mover nuestra base de datos a un único servidor grande"
 python devils_advocate.py --dry-run -f idea.md --rounds 1
+export ANTHROPIC_API_KEY=...   # ejecución real: el Crítico llama a Claude
+python devils_advocate.py "Mover nuestra base de datos a un único servidor grande"
 python -m pytest -q
 ```
+
+El Crítico usa `claude-haiku-5-5` con un máximo de 600 tokens de salida por llamada. El modelo se cambia en `config.toml` (sección `[models]`, ver arriba).
 
 ### Cómo se ordenan las objeciones
 Cada objeción recibe dos notas del 1 al 5:

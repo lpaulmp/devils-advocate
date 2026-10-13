@@ -19,6 +19,8 @@ def out(monkeypatch, tmp_path):
     monkeypatch.setattr(da, "CONFIG_PATH", str(tmp_path / "config.toml"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("XAI_API_KEY", raising=False)
+    # Never touch the real keychain from tests.
+    monkeypatch.setattr(da.keyring, "get_password", lambda service, user: None)
 
     def no_network(*args, **kwargs):
         raise AssertionError("network access attempted")
@@ -69,9 +71,16 @@ def test_model_text_is_not_parsed_as_markup(out, monkeypatch):
     assert "[simulated] a [/b] b :smile:" in out.getvalue()
 
 
-def test_without_dry_run_exits_non_zero(out):
+def test_live_run_without_key_exits_cleanly(out):
     with pytest.raises(SystemExit) as e:
         da.main(["an idea"])
+    assert e.value.code == 2
+    assert "no Anthropic API key" in out.getvalue()
+
+
+def test_local_live_run_not_implemented(out):
+    with pytest.raises(SystemExit) as e:
+        da.main(["--local", "an idea"])
     assert e.value.code == 2
 
 
