@@ -139,13 +139,19 @@ def test_load_terms_from_config(tmp_path):
     assert da.load_mask_terms(cfg) == ["Falcon", "internal-db"]
 
 
+def test_models_from_config(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[models]\ncritic = "claude-sonnet-5-5"\n', encoding="utf-8")
+    assert da.load_config(cfg)["models"] == {"critic": "claude-sonnet-5-5"}
+
+
 def test_missing_config_means_no_terms(tmp_path):
     assert da.load_mask_terms(tmp_path / "absent.toml") == []
 
 
-@pytest.mark.parametrize("content", ["[mask\nterms = 1", '[mask]\nterms = "Falcon"', "[mask]\nterms = [1, 2]", 'mask = "x"', "mask = 1"])
+@pytest.mark.parametrize("content", ["[mask\nterms = 1", '[mask]\nterms = "Falcon"', "[mask]\nterms = [1, 2]", 'mask = "x"', "mask = 1", 'models = "x"', "[models]\ncritic = 1", '[models]\ncritic = ""'])
 def test_invalid_config_fails_closed(tmp_path, content):
     cfg = tmp_path / "config.toml"
     cfg.write_text(content, encoding="utf-8")
     with pytest.raises(ValueError):
-        da.load_mask_terms(cfg)
+        da.load_config(cfg)
