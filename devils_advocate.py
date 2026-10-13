@@ -5,16 +5,21 @@
 
 # %%
 import argparse
+import ipaddress
+import math
 import re
 import sys
+import tomllib
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 console = Console()
+CONFIG_PATH = "~/.config/devils-advocate/config.toml"
 
 # %% [markdown]
 # ## JSON schemas (pydantic)
@@ -61,35 +66,82 @@ class JudgeResponse(BaseModel):
 # %% [markdown]
 # ## Masking filter
 # Applied to the idea before it is sent to any model.
+# Over-masking is accepted (e.g. a version like `1.2.3.4` becomes `[IP]`): it is safe.
+
 
 # %%
+def _is_ipv6(s: str) -> bool:
+    try:
+        ipaddress.IPv6Address(s)
+        return True
+    except ValueError:
+        return False
+
+
+# (name, regex, optional validator). Order matters: ARN before IPv6 (ARNs contain `::`).
 PATTERNS = [
-    ("AWS_KEY", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
-    ("TOKEN", r"\b(?:sk|xai)-[A-Za-z0-9_\-]{16,}\b"),
-    ("ARN", r"\barn:aws[a-z\-]*:[A-Za-z0-9\-]+:[a-z0-9\-]*:\d{0,12}:[^\s\"']+"),
-    ("EMAIL", r"\b[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+\b"),
-    ("IP", r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
-    ("ACCOUNT_ID", r"\b\d{12}\b"),
+    ("AWS_KEY", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", None),
+    ("TOKEN", r"\b(?:sk|xai)-[A-Za-z0-9_\-]{16,}", None),
+    ("ARN", r"\barn:aws[a-z\-]*:[A-Za-z0-9\-]+:[a-z0-9\-]*:\d{0,12}:[^\s\"']+", None),
+    ("EMAIL", r"\b[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+\b", None),
+    ("IP", r"(?<![\w:])(?:[0-9A-Fa-f]{0,4}:){2,7}(?:[0-9A-Fa-f]{1,4}|(?:\d{1,3}\.){3}\d{1,3})?(?![\w:])", _is_ipv6),
+    ("IP", r"\b(?:\d{1,3}\.){3}\d{1,3}\b", None),
+    ("ACCOUNT_ID", r"\b\d{12}\b", None),
 ]
+# Capturing group: re.split keeps the placeholders at odd indices.
+PLACEHOLDER = re.compile(r"(\[(?:%s|TERM)\])" % "|".join(sorted({name for name, _, _ in PATTERNS})))
+
+
+def _sub(pattern: str, repl: str, text: str, validate=None, flags=0) -> tuple[str, int]:
+    count = 0
+
+    def replace(m: re.Match) -> str:
+        nonlocal count
+        if validate and not validate(m.group()):
+            return m.group()
+        count += 1
+        return repl
+
+    return re.sub(pattern, replace, text, flags=flags), count
 
 
 def mask(text: str, terms: list[str] | None = None) -> tuple[str, int]:
     """Return (masked text, number of replacements)."""
     total = 0
-    for name, pattern in PATTERNS:
-        text, n = re.subn(pattern, f"[{name}]", text)
+    for name, pattern, validate in PATTERNS:
+        text, n = _sub(pattern, f"[{name}]", text, validate)
         total += n
-    for term in terms or []:
-        text, n = re.subn(re.escape(term), "[TERM]", text, flags=re.IGNORECASE)
+    terms = sorted({t.strip() for t in terms or [] if t.strip()}, key=len, reverse=True)
+    if not terms:
+        return text, total
+    # One pass over the custom terms, skipping placeholders already inserted.
+    terms_re = "|".join(re.escape(t) for t in terms)
+    parts = PLACEHOLDER.split(text)
+    for i in range(0, len(parts), 2):
+        parts[i], n = _sub(terms_re, "[TERM]", parts[i], flags=re.IGNORECASE)
         total += n
-    return text, total
+    return "".join(parts), total
+
+
+def load_mask_terms(path: str | Path | None = None) -> list[str]:
+    """Read `[mask] terms` from config.toml. Missing file → no terms; invalid file → error (fail closed)."""
+    path = Path(path or CONFIG_PATH).expanduser()
+    if not path.exists():
+        return []
+    try:
+        terms = tomllib.loads(path.read_text(encoding="utf-8")).get("mask", {}).get("terms", [])
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+        raise ValueError(f"cannot read {path.name}: {e}") from e
+    if not isinstance(terms, list) or not all(isinstance(t, str) for t in terms):
+        raise ValueError(f"{path.name}: [mask] terms must be a list of strings")
+    return terms
 
 
 # %% [markdown]
 # ## Simulated responses (`--dry-run`)
 
 # %%
-def simulate_critic() -> CriticResponse:
+def simulate_critic(idea: str) -> CriticResponse:
     return CriticResponse(objections=[
         Objection(id="O1", kind="premise", text="[simulated] Assumes users actually want this.", severity=4, probability=3),
         Objection(id="O2", kind="failure", text="[simulated] Single point of failure.", severity=5, probability=2),
@@ -97,7 +149,7 @@ def simulate_critic() -> CriticResponse:
     ])
 
 
-def simulate_auditor() -> AuditorResponse:
+def simulate_auditor(idea: str, critic: CriticResponse) -> AuditorResponse:
     return AuditorResponse(
         verdicts=[
             Verdict(id="O1", verdict="valid", reason="[simulated] No evidence of demand."),
@@ -108,7 +160,7 @@ def simulate_auditor() -> AuditorResponse:
     )
 
 
-def simulate_judge() -> JudgeResponse:
+def simulate_judge(idea: str, critic: CriticResponse, auditor: AuditorResponse) -> JudgeResponse:
     return JudgeResponse(
         consensus=["[simulated] The demand premise is unproven."],
         disagreements=["[simulated] Severity of the single point of failure."],
@@ -122,45 +174,68 @@ def simulate_judge() -> JudgeResponse:
 # ## CLI
 
 # %%
+def positive_float(value: str) -> float:
+    x = float(value)
+    if not (math.isfinite(x) and x > 0):
+        raise argparse.ArgumentTypeError(f"must be > 0, got {value}")
+    return x
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(prog="devils-advocate", description="Devil's advocate agent (Claude + Grok)")
-    p.add_argument("idea", nargs="?", help="idea text")
-    p.add_argument("-f", "--file", help="read the idea from a file")
+    source = p.add_mutually_exclusive_group()
+    source.add_argument("idea", nargs="?", help="idea text")
+    source.add_argument("-f", "--file", help="read the idea from a file")
     p.add_argument("--rounds", type=int, default=2, choices=[1, 2, 3])
     p.add_argument("--local", action="store_true", help="Ollama only; nothing leaves the machine")
     p.add_argument("--dry-run", action="store_true", help="no API calls (simulated responses)")
-    p.add_argument("--budget", type=float, default=0.10, help="USD cap for this run")
+    p.add_argument("--budget", type=positive_float, default=0.10, help="USD cap for this run (> 0)")
     p.add_argument("--configure", action="store_true", help="store API keys in the keychain")
     return p.parse_args(argv)
 
 
+def fail(message: str, code: int = 2):
+    console.print(f"[red]{escape(message)}[/red]")
+    sys.exit(code)
+
+
 def read_idea(args) -> str:
     if args.file:
-        return Path(args.file).expanduser().read_text(encoding="utf-8")
-    if args.idea:
-        return args.idea
-    console.print("[red]Missing idea: pass text or use -f file.[/red]")
-    sys.exit(2)
+        try:
+            idea = Path(args.file).expanduser().read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            fail(f"Cannot read idea file: {e.strerror if isinstance(e, OSError) else e}")
+    else:
+        idea = args.idea or ""
+    if not idea.strip():
+        fail("Missing idea: pass text or use -f file.")
+    return idea
 
 
-def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms=None):
-    _masked, n = mask(idea, terms)
-    console.print(f"[dim]Masking: {n} replacement(s).[/dim]")
-    if not dry_run:
-        console.print("[yellow]Real calls not implemented yet (stage 2+). Use --dry-run.[/yellow]")
-        return None
-    max_calls = 2 * rounds + 1
-    console.print(f"[dim]dry-run · rounds={rounds} · max calls={max_calls} · budget=${budget:.2f}[/dim]")
-
-    critic, auditor, judge = simulate_critic(), simulate_auditor(), simulate_judge()
-
+def render(critic: CriticResponse, auditor: AuditorResponse, judge: JudgeResponse):
+    # Model text is escaped: brackets in it must not be read as rich markup.
     table = Table(title="Objections (simulated)")
     for col in ("id", "kind", "text", "sev×prob"):
         table.add_column(col)
     for o in [*critic.objections, *auditor.new]:
-        table.add_row(o.id, o.kind, o.text, f"{o.severity}×{o.probability}={o.score}")
+        table.add_row(escape(o.id), o.kind, escape(o.text), f"{o.severity}×{o.probability}={o.score}")
     console.print(table)
     console.print(f"[bold]Global verdict (simulated):[/bold] {judge.global_verdict}")
+
+
+def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms=None):
+    if not dry_run:
+        fail("Real calls are not implemented yet (stage 2+). Use --dry-run.")
+    masked, n = mask(idea, terms)
+    console.print(f"[dim]Masking: {n} replacement(s).[/dim]")
+    max_calls = 2 * rounds + 1
+    console.print(f"[dim]dry-run · rounds={rounds} · max calls={max_calls} · budget=${budget:.2f}[/dim]")
+
+    # Only the masked text reaches the roles.
+    critic = simulate_critic(masked)
+    auditor = simulate_auditor(masked, critic)
+    judge = simulate_judge(masked, critic, auditor)
+    render(critic, auditor, judge)
     return critic, auditor, judge
 
 
@@ -170,7 +245,11 @@ def main(argv=None):
         console.print("[yellow]--configure is implemented in stage 5.[/yellow]")
         return
     idea = read_idea(args)
-    run(idea, args.rounds, args.budget, args.dry_run, args.local)
+    try:
+        terms = load_mask_terms()
+    except ValueError as e:
+        fail(str(e))
+    run(idea, args.rounds, args.budget, args.dry_run, args.local, terms)
 
 
 if __name__ == "__main__":
