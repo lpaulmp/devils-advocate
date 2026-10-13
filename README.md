@@ -6,7 +6,7 @@
 
 A command-line agent that looks for reasons why an idea or architecture would **not** be a good one: hidden premises, failure modes and edge cases. Claude critiques, Grok audits the critique, and a judge writes a prioritized report.
 
-> **Status:** stage 3. The Critic (Claude) and the Auditor (Grok) make real calls in rounds; the Judge is still simulated. `--dry-run` makes no API calls.
+> **Status:** stage 4. Critic (Claude), Auditor (Grok) and Judge (Claude) make real calls, and the report is saved. Cost tracking and `--configure` come in stage 5. `--dry-run` makes no API calls.
 
 ### Usage
 ```bash
@@ -18,16 +18,20 @@ python devils_advocate.py "Move our database to a single large server"
 python -m pytest -q
 ```
 
-The Critic uses `claude-haiku-5-5` (at most 600 output tokens per call) and the Auditor `grok-4.20-0309-non-reasoning` (at most 500). Change them in `config.toml`:
+The Critic uses `claude-haiku-5-5` (at most 600 output tokens per call), the Auditor `grok-4.20-0309-non-reasoning` (at most 500) and the Judge `claude-sonnet-5-5` (at most 700). Change them in `config.toml`:
 ```toml
 [models]
 critic = "claude-sonnet-5-5"
 auditor = "grok-4.3"
+judge = "claude-opus-5-5"
 ```
 
 ### Rounds
 Each round the Critic raises objections and the Auditor rates each one (*valid*, *exaggerated* or *incorrect*) and adds up to 3 edge cases. Only the 3 strongest valid or new objections (the beam) go to the next round, where the Critic must find new ones. The run stops after `--rounds` (default 2) or earlier if the Critic finds nothing new. At most `2 × rounds + 1` API calls are made; the last one is always kept for the Judge.
 If the Auditor fails (for example, a wrong xAI key), the run still shows the Critic's objections, marked *unaudited*.
+
+### Report
+The Judge reads every objection with its verdict and writes the synthesis: consensus, disagreements, a steelman (the strongest case *for* the idea), open questions and a global verdict (*proceed*, *adjust* or *drop*). The report is printed and saved as `~/devils-advocate/history/YYYY-MM-DD_HHMM_<slug>.md`, readable only by you. It contains the **masked** idea, never the original. If the Judge fails, the report is saved without the synthesis. If Claude declines the request for some safety categories, the API retries it on another Claude model and the report says so.
 
 ### How objections are ranked
 Every objection gets two scores from 1 to 5:
@@ -59,7 +63,7 @@ The tool prints how many replacements were made.
 
 Un agente de línea de comandos que busca razones por las que una idea o arquitectura **no** sería buena: premisas ocultas, modos de fallo y casos límite. Claude critica, Grok audita la crítica y un juez escribe un informe priorizado.
 
-> **Estado:** etapa 3. El Crítico (Claude) y el Auditor (Grok) hacen llamadas reales por rondas; el Juez sigue simulado. `--dry-run` no hace llamadas a APIs.
+> **Estado:** etapa 4. Crítico (Claude), Auditor (Grok) y Juez (Claude) hacen llamadas reales y el informe se guarda. El control de costes y `--configure` llegan en la etapa 5. `--dry-run` no hace llamadas a APIs.
 
 ### Uso
 ```bash
@@ -71,11 +75,14 @@ python devils_advocate.py "Mover nuestra base de datos a un único servidor gran
 python -m pytest -q
 ```
 
-El Crítico usa `claude-haiku-5-5` (máximo 600 tokens de salida por llamada) y el Auditor `grok-4.20-0309-non-reasoning` (máximo 500). Los modelos se cambian en `config.toml` (sección `[models]`, ver arriba).
+El Crítico usa `claude-haiku-5-5` (máximo 600 tokens de salida por llamada), el Auditor `grok-4.20-0309-non-reasoning` (máximo 500) y el Juez `claude-sonnet-5-5` (máximo 700). Los modelos se cambian en `config.toml` (sección `[models]`, ver arriba).
 
 ### Rondas
 En cada ronda el Crítico plantea objeciones y el Auditor califica cada una (*valid*, *exaggerated* o *incorrect*) y añade hasta 3 casos límite. Solo las 3 objeciones válidas o nuevas más fuertes (el *beam*) pasan a la siguiente ronda, donde el Crítico debe encontrar otras nuevas. La ejecución termina tras `--rounds` (2 por defecto) o antes si el Crítico no encuentra nada nuevo. Se hacen como máximo `2 × rondas + 1` llamadas; la última siempre se reserva para el Juez.
 Si el Auditor falla (por ejemplo, una clave de xAI incorrecta), se muestran igualmente las objeciones del Crítico, marcadas como *unaudited*.
+
+### Informe
+El Juez lee todas las objeciones con su veredicto y escribe la síntesis: consenso, desacuerdos, un *steelman* (el mejor argumento *a favor* de la idea), preguntas abiertas y un veredicto global (*proceed*, *adjust* o *drop*). El informe se muestra y se guarda en `~/devils-advocate/history/AAAA-MM-DD_HHMM_<slug>.md`, legible solo por ti. Contiene la idea **enmascarada**, nunca la original. Si el Juez falla, el informe se guarda sin la síntesis. Si Claude rechaza la petición por ciertas categorías de seguridad, la API la reintenta en otro modelo de Claude y el informe lo indica.
 
 ### Cómo se ordenan las objeciones
 Cada objeción recibe dos notas del 1 al 5:

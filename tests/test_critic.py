@@ -116,7 +116,7 @@ def test_live_run_sends_only_masked_text_and_prints_objections(live):
     assert secret not in sent and "[AWS_KEY]" in sent
     text = live.out.getvalue()
     assert "Nobody asked for it." in text
-    assert "calls: 3/5" in text  # round 1: Critic + Auditor; round 2: the Critic finds nothing new
+    assert "calls: 4/5" in text  # round 1: Critic + Auditor; round 2: the Critic finds nothing new; Judge
     assert "100 input / 50 output tokens" not in text  # two Critic calls are summed
     assert "200 input / 100 output tokens" in text
 
@@ -228,17 +228,23 @@ def test_api_errors_exit_cleanly_without_key_or_hidden_retries(real_client, repl
 def test_successful_real_client_run_does_not_print_key(real_client):
     import httpx2
 
-    real_client.reply = lambda r: httpx2.Response(200, json={
-        "id": "msg_test", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
-        "content": [{"type": "text", "text": json.dumps(VALID)}],
-        "stop_reason": "end_turn", "stop_sequence": None,
-        "usage": {"input_tokens": 10, "output_tokens": 5},
-    })
+    from tests.fakes import VALID_JUDGE
+
+    def reply(request):
+        is_judge = "judge of a devil" in json.loads(request.content)["system"]
+        return httpx2.Response(200, json={
+            "id": "msg_test", "type": "message", "role": "assistant", "model": "claude-test",
+            "content": [{"type": "text", "text": json.dumps(VALID_JUDGE if is_judge else VALID)}],
+            "stop_reason": "end_turn", "stop_sequence": None,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        })
+
+    real_client.reply = reply
     da.main(["--rounds", "1", "an idea"])
     out = real_client.out.getvalue()
-    assert "Nobody asked for it." in out
+    assert "Nobody asked for it." in out and "Cheap to try" in out
     assert FAKE_KEY not in out
-    assert real_client.requests == 1
+    assert real_client.requests == 2  # Critic + Judge (the Auditor is a fake)
 
 
 def test_oversize_idea_rejected_before_any_call(live):
