@@ -33,10 +33,10 @@ judge = "claude-opus-5-5"
 
 ### Rounds
 Each round the Critic raises objections and the Auditor rates each one (*valid*, *exaggerated* or *incorrect*) and adds up to 3 edge cases. Only the 3 strongest valid or new objections (the beam) go to the next round, where the Critic must find new ones. The run stops after `--rounds` (default 2) or earlier if the Critic finds nothing new. At most `2 × rounds + 1` API calls are made; the last one is always kept for the Judge.
-If the Auditor fails (for example, a wrong xAI key), the run still shows the Critic's objections, marked *unaudited*.
+If the Auditor fails (for example, a wrong xAI key), the run still shows the Critic's objections, marked *sin auditar* (unaudited).
 
 ### Report
-The Judge reads every objection with its verdict and writes the synthesis: consensus, disagreements, a steelman (the strongest case *for* the idea), open questions and a global verdict (*proceed*, *adjust* or *drop*). The terminal shows a summary (`-v` the full synthesis) and the full report is saved as `~/devils-advocate/history/YYYY-MM-DD_HHMM_<slug>.md`, readable only by you. It contains the **masked** idea, never the original. If the Judge fails, the report is saved without the synthesis. If Claude declines the request for some safety categories, the API retries it on another Claude model and the report says so.
+The Judge reads every objection with its verdict and writes the synthesis: consensus, disagreements, a steelman (the strongest case *for* the idea), at most 2 open questions about the 3 strongest objections, and a global verdict (*proceed*, *adjust* or *drop*, shown as SEGUIR, AJUSTAR or DESCARTAR). The prompts and all program output (terminal and report) are in Spanish. The terminal shows a summary (`-v` the full synthesis) and the full report is saved as `~/devils-advocate/history/YYYY-MM-DD_HHMM_<slug>.md`, readable only by you. It contains the **masked** idea, never the original. If the Judge fails, the report is saved without the synthesis. If Claude declines the request for some safety categories, the API retries it on another Claude model and the report says so.
 
 ### Keys, prices and budget
 `--configure` asks for the Anthropic and xAI keys without showing them and stores them in the macOS keychain (`ANTHROPIC_API_KEY` and `XAI_API_KEY` also work). It also creates `~/.config/devils-advocate/config.toml` if it does not exist.
@@ -99,7 +99,7 @@ python devils_advocate.py --configure   # guarda las dos claves en el llavero y 
 python devils_advocate.py "Mover nuestra base de datos a un único servidor grande"
 python devils_advocate.py --budget 0.05 -f idea.md
 python devils_advocate.py -v "..."     # todas las objeciones por ronda y la síntesis completa
-python devils_advocate.py -vv "..."    # además enmascarado, llamadas y tabla de costes
+python devils_advocate.py -vv "..."    # además enmascarado, llamadas y tabla de costos
 python -m pytest -q
 ```
 
@@ -109,15 +109,15 @@ El Crítico usa `claude-haiku-5-5` (máximo 1000 tokens de salida por llamada), 
 
 ### Rondas
 En cada ronda el Crítico plantea objeciones y el Auditor califica cada una (*valid*, *exaggerated* o *incorrect*) y añade hasta 3 casos límite. Solo las 3 objeciones válidas o nuevas más fuertes (el *beam*) pasan a la siguiente ronda, donde el Crítico debe encontrar otras nuevas. La ejecución termina tras `--rounds` (2 por defecto) o antes si el Crítico no encuentra nada nuevo. Se hacen como máximo `2 × rondas + 1` llamadas; la última siempre se reserva para el Juez.
-Si el Auditor falla (por ejemplo, una clave de xAI incorrecta), se muestran igualmente las objeciones del Crítico, marcadas como *unaudited*.
+Si el Auditor falla (por ejemplo, una clave de xAI incorrecta), se muestran igualmente las objeciones del Crítico, marcadas como *sin auditar*.
 
 ### Informe
-El Juez lee todas las objeciones con su veredicto y escribe la síntesis: consenso, desacuerdos, un *steelman* (el mejor argumento *a favor* de la idea), preguntas abiertas y un veredicto global (*proceed*, *adjust* o *drop*). La terminal muestra un resumen (`-v` la síntesis completa) y el informe completo se guarda en `~/devils-advocate/history/AAAA-MM-DD_HHMM_<slug>.md`, legible solo por ti. Contiene la idea **enmascarada**, nunca la original. Si el Juez falla, el informe se guarda sin la síntesis. Si Claude rechaza la petición por ciertas categorías de seguridad, la API la reintenta en otro modelo de Claude y el informe lo indica.
+El Juez lee todas las objeciones con su veredicto y escribe la síntesis: consenso, desacuerdos, un *steelman* (el mejor argumento *a favor* de la idea), como máximo 2 preguntas abiertas sobre las 3 objeciones más fuertes, y un veredicto global (SEGUIR, AJUSTAR o DESCARTAR; en el JSON, *proceed*, *adjust* o *drop*). Las instrucciones de los modelos y toda la salida están en español. La terminal muestra un resumen (`-v` la síntesis completa) y el informe completo se guarda en `~/devils-advocate/history/AAAA-MM-DD_HHMM_<slug>.md`, legible solo por ti. Contiene la idea **enmascarada**, nunca la original. Si el Juez falla, el informe se guarda sin la síntesis. Si Claude rechaza la petición por ciertas categorías de seguridad, la API la reintenta en otro modelo de Claude y el informe lo indica.
 
 ### Claves, precios y presupuesto
 `--configure` pide las claves de Anthropic y xAI sin mostrarlas y las guarda en el llavero de macOS (también sirven `ANTHROPIC_API_KEY` y `XAI_API_KEY`). Además crea `~/.config/devils-advocate/config.toml` si no existe.
 
-Los precios **no** vienen incluidos: cópialos (USD por millón de tokens) de la página de precios de cada consola en `config.toml`, en la sección `[prices]` (ver el ejemplo de arriba). Antes de cada llamada se estima su coste máximo (entrada estimada más el límite de salida completo). Si la llamada pudiera superar `--budget` (0,10 USD por defecto), las rondas se detienen y el informe se escribe con lo que haya; siempre se reserva una parte del presupuesto para el Juez. Si el presupuesto no cubre ni la primera llamada del Crítico más la parte del Juez, se detiene antes de cualquier llamada y no se escribe informe. El presupuesto es un límite aproximado: el tamaño de la entrada se estima, un fallback del Juez se valora al precio del modelo pedido y una llamada que agota el tiempo no se cuenta. Una idea muy larga con `--rounds 2` o `3` puede necesitar un `--budget` mayor. Usa un modelo de Auditor sin razonamiento. Con `-vv` se muestra una tabla de costes por rol y modelo (el informe guardado siempre la incluye). Un modelo sin precio se cuenta solo en tokens, y la herramienta avisa de que el presupuesto no lo cubre.
+Los precios **no** vienen incluidos: cópialos (USD por millón de tokens) de la página de precios de cada consola en `config.toml`, en la sección `[prices]` (ver el ejemplo de arriba). Antes de cada llamada se estima su costo máximo (entrada estimada más el límite de salida completo). Si la llamada pudiera superar `--budget` (0,10 USD por defecto), las rondas se detienen y el informe se escribe con lo que haya; siempre se reserva una parte del presupuesto para el Juez. Si el presupuesto no cubre ni la primera llamada del Crítico más la parte del Juez, se detiene antes de cualquier llamada y no se escribe informe. El presupuesto es un límite aproximado: el tamaño de la entrada se estima, un fallback del Juez se valora al precio del modelo pedido y una llamada que agota el tiempo no se cuenta. Una idea muy larga con `--rounds 2` o `3` puede necesitar un `--budget` mayor. Usa un modelo de Auditor sin razonamiento. Con `-vv` se muestra una tabla de costos por rol y modelo (el informe guardado siempre la incluye). Un modelo sin precio se cuenta solo en tokens, y la herramienta avisa de que el presupuesto no lo cubre.
 
 Pon también un límite de gasto en console.anthropic.com y desactiva la recarga automática en console.x.ai.
 
@@ -129,10 +129,10 @@ Cada objeción recibe dos notas del 1 al 5:
 
 | Nota | Severidad: *¿qué tan grave es si ocurre?* | Probabilidad: *¿qué tan probable es que ocurra?* |
 |---|---|---|
-| 1 | Cosmético, se puede ignorar | Muy improbable, requiere una combinación rara |
+| 1 | Cosmético, fácil de ignorar | Muy improbable, requiere una combinación rara |
 | 2 | Molestia menor, barata de arreglar | Improbable |
-| 3 | Coste o retraso real | Plausible, podría pasar |
-| 4 | Grave: pérdida de datos, caída, coste alto | Probable |
+| 3 | Costo o retraso real | Plausible, podría pasar |
+| 4 | Grave: pérdida de datos, caída del servicio, costo alto | Probable |
 | 5 | Fatal: la idea fracasa o causa daño | Casi seguro |
 
 **Prioridad = severidad × probabilidad** (de 1 a 25). Un riesgo fatal pero muy improbable (5×1 = 5) queda por debajo de un problema molesto que casi seguro ocurrirá (2×5 = 10). Tras cada ronda solo pasan las 3 objeciones válidas o nuevas con mayor prioridad, como en beam search.

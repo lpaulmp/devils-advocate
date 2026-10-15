@@ -39,7 +39,7 @@ def test_request_respects_spec():
     fmt = request["response_format"]
     assert fmt["type"] == "json_schema" and fmt["json_schema"]["strict"] is True
     assert fmt["json_schema"]["schema"]["required"] == ["verdicts", "new"]
-    assert "Severity" in da.AUDITOR_SYSTEM and "Probability" in da.AUDITOR_SYSTEM
+    assert "Severidad" in da.AUDITOR_SYSTEM and "Probabilidad" in da.AUDITOR_SYSTEM
 
 
 @pytest.mark.parametrize("bad", [
@@ -62,14 +62,14 @@ def test_invalid_answer_is_retried_once(bad):
 
 def test_two_invalid_answers_fail():
     grok = FakeGrok(auditor_response("nope"), auditor_response("nope"))
-    with pytest.raises(da.RoleError, match="invalid answer twice"):
+    with pytest.raises(da.RoleError, match="respuesta inválida dos veces"):
         da.call_auditor(grok, da.Session(max_calls=5), "an idea", OBJECTIONS)
     assert len(grok.requests) == 2
 
 
 def test_refusal_is_not_retried():
     grok = FakeGrok(auditor_response("", refusal="no"))
-    with pytest.raises(da.RoleError, match="declined"):
+    with pytest.raises(da.RoleError, match="rechazó"):
         da.call_auditor(grok, da.Session(max_calls=5), "an idea", OBJECTIONS)
     assert len(grok.requests) == 1
 
@@ -86,7 +86,7 @@ def test_blocked_retry_keeps_the_first_cause():
     with pytest.raises(da.RoleError) as failure:
         da.call_auditor(grok, da.Session(max_calls=3, calls=1), "an idea", OBJECTIONS)
     assert len(grok.requests) == 1
-    assert "verdicts do not match" in str(failure.value) and "no retry: call cap reached" in str(failure.value)
+    assert "los veredictos no coinciden" in str(failure.value) and "sin reintento: se alcanzó el límite de llamadas" in str(failure.value)
 
 
 def test_objections_cannot_close_their_tag():
@@ -179,6 +179,6 @@ def test_empty_choices_count_as_invalid():
 
     empty = SimpleNamespace(choices=[], usage=None)
     grok = FakeGrok(empty, empty)
-    with pytest.raises(da.RoleError, match="no choices"):
+    with pytest.raises(da.RoleError, match="choices"):
         da.call_auditor(grok, da.Session(max_calls=5), "an idea", OBJECTIONS)
     assert len(grok.requests) == 2

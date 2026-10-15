@@ -89,7 +89,7 @@ def test_ids_are_renumbered_for_the_whole_run_and_focus_is_the_beam():
 def test_converges_when_critic_finds_nothing_new():
     script = Script([[obj(1, 3, 3)], []])
     ledger, beam, note = da.run_rounds(script.critic, script.auditor, "idea", rounds=3)
-    assert "Converged in round 2" in note
+    assert "Convergió en la ronda 2" in note
     assert script.audited == [["O1"]]  # no Auditor call for an empty round
     assert len(script.focus) == 2      # no third round
 
@@ -104,14 +104,14 @@ def test_later_critic_failure_keeps_what_exists():
     script = Script([[obj(1, 3, 3)], da.CallLimitReached("cap")])
     ledger, beam, note = da.run_rounds(script.critic, script.auditor, "idea", rounds=2)
     assert [e.objection.id for e in ledger] == ["O1"] and [e.objection.id for e in beam] == ["O1"]
-    assert "Round 2: Critic failed (cap)" in note
+    assert "Ronda 2: falló el Crítico (cap)" in note
 
 
 def test_auditor_failure_leaves_objections_unaudited():
     script = Script([[obj(1, 3, 3)]], [da.RoleError("bad json")])
     ledger, beam, note = da.run_rounds(script.critic, script.auditor, "idea", rounds=2)
     assert ledger[0].verdict is None and beam == []
-    assert "Auditor failed" in note
+    assert "falló el Auditor" in note
 
 
 # --- live runs ----------------------------------------------------------------------------------
@@ -143,9 +143,9 @@ def test_live_rounds_stop_at_rounds_and_reserve_the_judge(live):
     da.main(["-vv", "--rounds", "2", "an idea"])
     out = live.out.getvalue()
     assert len(live.claude.requests) == 2 and len(live.grok.requests) == 2
-    assert "calls: 5/5" in out  # the fifth call is the Judge's
+    assert "llamadas: 5/5" in out  # the fifth call is the Judge's
     assert len(live.claude.judge.requests) == 1
-    assert "Beam (top 3): O1, O2" in out
+    assert "Beam (mejores 3): O1, O2" in out
 
 
 def test_live_rounds_cap_stops_the_run_before_rounds_do(live):
@@ -153,8 +153,8 @@ def test_live_rounds_cap_stops_the_run_before_rounds_do(live):
     live.claude.queue = [critic_response("nope"), critic_response(ROUND), critic_response("nope"), critic_response(ROUND)]
     da.main(["-vv", "--rounds", "2", "an idea"])
     out = live.out.getvalue()
-    assert "calls: 5/5" in out  # 4 for the rounds + the Judge's reserved call
-    assert "Round 2: Critic failed (the Critic returned an invalid answer (" in out and "no retry: call cap reached" in out
+    assert "llamadas: 5/5" in out  # 4 for the rounds + the Judge's reserved call
+    assert "Ronda 2: falló el Crítico (el Crítico devolvió una respuesta inválida (" in out and "sin reintento: se alcanzó el límite de llamadas" in out
     assert len(live.claude.judge.requests) == 1
     assert len(live.claude.requests) == 3 and len(live.grok.requests) == 1
 
@@ -174,10 +174,10 @@ def test_live_rounds_one_round_with_a_critic_retry_still_leaves_the_judge(live):
     live.claude.queue = [critic_response("nope"), critic_response(ROUND)]
     da.main(["-vv", "--rounds", "1", "an idea"])
     out = live.out.getvalue()
-    assert "calls: 3/3" in out  # Critic + retry + the Judge's reserved call
-    assert "Auditor failed (call cap reached" in out  # cap 3 minus the Judge's reserve
+    assert "llamadas: 3/3" in out  # Critic + retry + the Judge's reserved call
+    assert "falló el Auditor (se alcanzó el límite de llamadas" in out  # cap 3 minus the Judge's reserve
     assert len(live.claude.judge.requests) == 1
-    assert "unaudited" in out
+    assert "sin auditar" in out
 
 
 def test_live_run_shows_verdicts_reasons_and_new_edge_cases(live):
@@ -186,7 +186,7 @@ def test_live_run_shows_verdicts_reasons_and_new_edge_cases(live):
     da.main(["-vv", "an idea"])
     out = live.out.getvalue()
     assert "↳ Holds." in out and "Empty input [x]" in out and "G1" in out
-    assert "Converged in round 2" in out
+    assert "Convergió en la ronda 2" in out
     assert re.search(r"auditor\W+grok-4.20-0309-non-reasoning\W+80\W+40\W", out)
 
 
@@ -205,7 +205,7 @@ def test_missing_xai_key_fails_before_any_call(live, monkeypatch):
     with pytest.raises(SystemExit) as e:
         da.main(["-vv", "an idea"])
     assert e.value.code == 2
-    assert "no xAI API key" in live.out.getvalue()
+    assert "falta la clave de xAI" in live.out.getvalue()
     assert live.claude.requests == []
 
 
@@ -232,7 +232,7 @@ def test_xai_errors_do_not_leak_the_key_or_retry(live, monkeypatch, status):
     out = live.out.getvalue()
     assert FAKE_KEY not in out
     assert len(requests) == 1
-    assert f"Auditor failed (API error {status}" in out
+    assert f"falló el Auditor (error de la API {status}" in out
 
 
 def test_default_output_is_short(monkeypatch, tmp_path):
@@ -241,10 +241,10 @@ def test_default_output_is_short(monkeypatch, tmp_path):
     monkeypatch.setattr(da, "CONFIG_PATH", str(tmp_path / "config.toml"))
     da.main(["--dry-run", "x"])
     out = buf.getvalue()
-    assert "Verdict (simulated): ADJUST" in out
-    assert "Key objections\n  1. [simulated] Assumes users actually want this. (12)" in out
-    assert "Open questions" in out and "Report saved:" in out
-    for detail in ("Masking", "max calls", "Objections (simulated)", "Beam", "Consensus", "Steelman", "Converged"):
+    assert "Veredicto (simulado): AJUSTAR" in out
+    assert "Objeciones clave\n  1. [simulado] Supone que los usuarios realmente quieren esto. (12)" in out
+    assert "Preguntas abiertas" in out and "Informe guardado:" in out
+    for detail in ("Enmascarado", "máx. llamadas", "Objeciones (simuladas)", "Beam", "Consenso", "Steelman", "Convergió"):
         assert detail not in out
 
 
@@ -253,7 +253,7 @@ def test_masked_values_are_mentioned_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(da, "console", Console(file=buf, width=200, color_system=None))
     monkeypatch.setattr(da, "CONFIG_PATH", str(tmp_path / "config.toml"))
     da.main(["--dry-run", "server 10.0.0.1"])
-    assert "Masked 1 sensitive value(s) before sending." in buf.getvalue()
+    assert "Se enmascararon 1 dato(s) sensible(s) antes de enviar." in buf.getvalue()
 
 
 def test_dry_run_rounds_converge(monkeypatch, tmp_path):
@@ -262,5 +262,5 @@ def test_dry_run_rounds_converge(monkeypatch, tmp_path):
     monkeypatch.setattr(da, "CONFIG_PATH", str(tmp_path / "config.toml"))
     da.main(["-vv", "--dry-run", "--rounds", "3", "x"])
     out = buf.getvalue()
-    assert "Beam (top 3): O1, O3, G1" in out
-    assert "Converged in round 2" in out
+    assert "Beam (mejores 3): O1, O3, G1" in out
+    assert "Convergió en la ronda 2" in out

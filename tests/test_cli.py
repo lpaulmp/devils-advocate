@@ -34,12 +34,12 @@ def out(monkeypatch, tmp_path):
 @pytest.mark.parametrize("extra", [[], ["--local"], ["--rounds", "1"], ["--rounds", "3"]])
 def test_dry_run_without_keys_or_network(out, extra):
     da.main(["-vv", "--dry-run", *extra, "an idea"])
-    assert "Global verdict" in out.getvalue()
+    assert "Veredicto global" in out.getvalue()
 
 
 def test_dry_run_reports_call_cap(out):
     da.main(["-vv", "--dry-run", "--rounds", "3", "x"])
-    assert "max calls=7" in out.getvalue()
+    assert "máx. llamadas=7" in out.getvalue()
 
 
 def test_only_masked_text_reaches_roles(out, monkeypatch, tmp_path):
@@ -50,7 +50,7 @@ def test_only_masked_text_reaches_roles(out, monkeypatch, tmp_path):
 
     da.main(["-vv", "--dry-run", f"Falcon uses {FAKE_KEY} on 10.0.0.1"])
     assert seen and all(idea == "[TERM] uses [AWS_KEY] on [IP]" for idea in seen)
-    assert "Masking: 3 replacement(s)" in out.getvalue()
+    assert "Enmascarado: 3 reemplazo(s)" in out.getvalue()
 
 
 @pytest.mark.parametrize("level", [[], ["-v"], ["-vv"]])
@@ -77,7 +77,7 @@ def test_live_run_without_key_exits_cleanly(out):
     with pytest.raises(SystemExit) as e:
         da.main(["-vv", "an idea"])
     assert e.value.code == 2
-    assert "no Anthropic API key" in out.getvalue()
+    assert "falta la clave de Anthropic" in out.getvalue()
 
 
 def test_local_live_run_not_implemented(out):
@@ -112,7 +112,7 @@ def test_idea_from_file(out, tmp_path):
     idea = tmp_path / "idea.md"
     idea.write_text("an idea from a file", encoding="utf-8")
     da.main(["-vv", "--dry-run", "-f", str(idea)])
-    assert "Global verdict" in out.getvalue()
+    assert "Veredicto global" in out.getvalue()
 
 
 def test_invalid_config_aborts(out, tmp_path):
