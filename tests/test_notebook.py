@@ -130,7 +130,7 @@ def test_notebook_run_asks_for_missing_keys_without_storing_them(monkeypatch, tm
     monkeypatch.setattr(da, "main", lambda argv: ran.append(argv))
     da.notebook_run("an idea", rounds=1, budget=0.05, dry_run=False)
     assert len(asked) == 2 and all("not stored" in p for p in asked)
-    assert ran == [["--rounds", "1", "--budget", "0.05", "--", "an idea"]]
+    assert ran == [["--rounds", "1", "--budget", "0.05", "-vv", "--", "an idea"]]
     assert os.environ["ANTHROPIC_API_KEY"] == "typed-key"  # only in this process, never written anywhere
 
 
@@ -139,7 +139,7 @@ def test_notebook_run_dry_run_never_asks_for_keys(monkeypatch):
     ran = []
     monkeypatch.setattr(da, "main", lambda argv: ran.append(argv))
     da.notebook_run("an idea")
-    assert ran == [["--rounds", "1", "--budget", "0.1", "--dry-run", "--", "an idea"]]
+    assert ran == [["--rounds", "1", "--budget", "0.1", "--dry-run", "-vv", "--", "an idea"]]
 
 
 def test_notebook_run_turns_exits_into_a_message(monkeypatch):

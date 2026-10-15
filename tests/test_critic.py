@@ -113,7 +113,7 @@ def live(monkeypatch, tmp_path):
 
 def test_live_run_sends_only_masked_text_and_prints_objections(live):
     secret = "AKIA" + "ABCDEFGHIJKLMNOP"
-    da.main([f"Store {secret} in the repo"])
+    da.main(["-vv", f"Store {secret} in the repo"])
     sent = live.client.requests[0]["messages"][0]["content"]
     assert secret not in sent and "[AWS_KEY]" in sent
     text = live.out.getvalue()
@@ -124,19 +124,19 @@ def test_live_run_sends_only_masked_text_and_prints_objections(live):
 
 def test_live_run_uses_model_from_config(live):
     (live.tmp / "config.toml").write_text('[models]\ncritic = "claude-sonnet-5-5"\n', encoding="utf-8")
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     assert live.client.requests[0]["model"] == "claude-sonnet-5-5"
 
 
 def test_live_run_never_prints_the_key(live):
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     assert FAKE_KEY not in live.out.getvalue()
 
 
 def test_live_run_failure_exits_cleanly(live):
     live.client.queue = [response("nope"), response("nope")]
     with pytest.raises(SystemExit) as e:
-        da.main(["an idea"])
+        da.main(["-vv", "an idea"])
     assert e.value.code == 2
     assert "Critic failed" in live.out.getvalue()
     assert "calls: 2/5" in live.out.getvalue()
@@ -148,7 +148,7 @@ def test_live_run_api_error_exits_cleanly(live, monkeypatch):
 
     monkeypatch.setattr(live.client, "create", boom)
     with pytest.raises(SystemExit) as e:
-        da.main(["an idea"])
+        da.main(["-vv", "an idea"])
     assert e.value.code == 2
     assert "APIConnectionError" in live.out.getvalue()
 
@@ -217,7 +217,7 @@ def real_client(monkeypatch, tmp_path):
 def test_api_errors_exit_cleanly_without_key_or_hidden_retries(real_client, reply):
     real_client.reply = reply
     with pytest.raises(SystemExit) as e:
-        da.main(["an idea"])
+        da.main(["-vv", "an idea"])
     assert e.value.code == 2
     out = real_client.out.getvalue()
     assert FAKE_KEY not in out
@@ -241,7 +241,7 @@ def test_successful_real_client_run_does_not_print_key(real_client):
         })
 
     real_client.reply = reply
-    da.main(["--rounds", "1", "an idea"])
+    da.main(["-vv", "--rounds", "1", "an idea"])
     out = real_client.out.getvalue()
     assert "Nobody asked for it." in out and "Cheap to try" in out
     assert FAKE_KEY not in out
@@ -250,13 +250,13 @@ def test_successful_real_client_run_does_not_print_key(real_client):
 
 def test_oversize_idea_rejected_before_any_call(live):
     with pytest.raises(SystemExit) as e:
-        da.main(["x" * (da.MAX_IDEA_CHARS + 1)])
+        da.main(["-vv", "x" * (da.MAX_IDEA_CHARS + 1)])
     assert e.value.code == 2
     assert live.client.requests == []
 
 
 def test_live_run_warns_about_missing_prices(live):
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     out = live.out.getvalue()
     assert "no price in config.toml for claude-haiku-5-5" in out and "--budget cannot cover it" in out
 
@@ -272,7 +272,7 @@ def test_idea_cannot_close_its_tag(idea):
 
 def test_model_name_with_brackets_does_not_crash(live):
     (live.tmp / "config.toml").write_text('[models]\ncritic = "x[/y]"\n', encoding="utf-8")
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     assert "x[/y]" in live.out.getvalue()
 
 
