@@ -57,7 +57,6 @@ def test_other_judge_models_drop_sonnet_only_options(model):
     '{"consensus": [',
     json.dumps({**VALID_JUDGE, "global_verdict": "maybe"}),
     json.dumps({**VALID_JUDGE, "consensus": ["x"] * 6}),
-    json.dumps({**VALID_JUDGE, "questions": ["x"] * 6}),
 ])
 def test_invalid_answer_is_retried_once(bad):
     claude = FakeClaude()
@@ -66,6 +65,18 @@ def test_invalid_answer_is_retried_once(bad):
     judge, _ = da.call_judge(claude, session, "idea", *entries())
     assert judge.global_verdict == "adjust"
     assert session.calls == 2 and session.usage["judge"] == {"input_tokens": 600, "output_tokens": 400}
+
+
+def test_at_most_two_questions_about_the_beam():
+    assert "como máximo 2 preguntas" in da.JUDGE_SYSTEM and "in_beam = true" in da.JUDGE_SYSTEM
+    assert "las 3 más fuertes" in da.JUDGE_SYSTEM and "devuelve una lista vacía" in da.JUDGE_SYSTEM
+
+
+def test_extra_questions_are_dropped_without_a_retry():
+    claude = FakeClaude()
+    claude.judge.queue = [judge_response({**VALID_JUDGE, "questions": ["a?", "b?", "c?"]})]
+    judge, _ = da.call_judge(claude, da.Session(max_calls=5), "idea", *entries())
+    assert judge.questions == ["a?", "b?"] and len(claude.judge.requests) == 1
 
 
 def test_refusal_is_not_retried():

@@ -18,7 +18,7 @@
 # |---|---|---|---|
 # | Crítico | Claude `claude-haiku-5-5` | 1000 tokens | Hasta 5 objeciones: premisas ocultas, fallos, casos límite, costos, seguridad |
 # | Auditor | Grok `grok-4.20-0309-non-reasoning` | 1000 tokens | Califica cada objeción como *valid* (válida), *exaggerated* (exagerada) o *incorrect* (incorrecta) y añade hasta 3 casos límite |
-# | Juez | Claude `claude-sonnet-5-5` | 1500 tokens | Consenso, desacuerdos, *steelman*, preguntas abiertas y un veredicto (*proceed* / *adjust* / *drop*) |
+# | Juez | Claude `claude-sonnet-5-5` | 1500 tokens | Consenso, desacuerdos, *steelman*, hasta 2 preguntas sobre las 3 objeciones más fuertes y un veredicto (*proceed* / *adjust* / *drop*) |
 #
 # Sus instrucciones de sistema son las constantes `CRITIC_SYSTEM`, `AUDITOR_SYSTEM` y `JUDGE_SYSTEM` de más
 # abajo, en español. Cada respuesta debe cumplir un esquema JSON y se valida con pydantic.
@@ -72,7 +72,7 @@ import anthropic
 import keyring
 import openai
 from keyring.errors import KeyringError
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
@@ -131,12 +131,21 @@ class AuditorResponse(BaseModel):
         return self
 
 
+MAX_QUESTIONS = 2  # open questions the Judge asks, about the beam
+
+
 class JudgeResponse(BaseModel):
     consensus: list[str] = Field(max_length=5)
     disagreements: list[str] = Field(max_length=5)
     steelman: str
-    questions: list[str] = Field(max_length=5)
+    questions: list[str]
     global_verdict: Literal["proceed", "adjust", "drop"]
+
+    @field_validator("questions", mode="before")
+    @classmethod
+    def keep_two_questions(cls, v):
+        # The prompt asks for at most 2; extra ones are dropped rather than costing a retry or the synthesis.
+        return v[:MAX_QUESTIONS] if isinstance(v, list) else v
 
 
 # %% [markdown]
@@ -680,7 +689,8 @@ def run_rounds(critic_fn, auditor_fn, idea: str, rounds: int):
 # %% [markdown]
 # ## Juez (Claude)
 # El Juez lee la idea enmascarada y todo el registro (veredictos, razones, beam) y escribe la síntesis:
-# consenso, desacuerdos, un *steelman* de la idea (el mejor argumento a favor), preguntas abiertas y un
+# consenso, desacuerdos, un *steelman* de la idea (el mejor argumento a favor), hasta 2 preguntas abiertas
+# sobre las 3 objeciones más fuertes (el beam) y un
 # veredicto global. Usa la llamada reservada. Si falla, el informe se escribe igual con lo que haya.
 #
 # Sus instrucciones (`JUDGE_SYSTEM`) están en la celda siguiente; `proceed`, `adjust` y `drop` se muestran como
@@ -690,7 +700,7 @@ def run_rounds(critic_fn, auditor_fn, idea: str, rounds: int):
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
 
-JUDGE_SYSTEM = """Eres el juez de una revisión de abogado del diablo. <idea> contiene una idea y <ledger> todas \
+JUDGE_SYSTEM = f"""Eres el juez de una revisión de abogado del diablo. <idea> contiene una idea y <ledger> todas \
 las objeciones planteadas contra ella, en JSON: quién la planteó (critic o auditor), el veredicto del auditor \
 (valid, exaggerated, incorrect; new = añadida por el auditor; null = sin auditar) con su razón, severidad × \
 probabilidad (de 1 a 5 cada una) e in_beam = entre las más fuertes.
@@ -699,7 +709,7 @@ Escribe una síntesis equilibrada:
 - consensus: hasta 5 puntos en los que crítico y auditor coinciden (objeciones válidas o nuevas, las más fuertes primero), citando ids como (O1).
 - disagreements: hasta 5 objeciones que el auditor consideró exageradas o incorrectas, cada una con las dos posturas en una frase.
 - steelman: el argumento honesto más fuerte A FAVOR de la idea pese a las objeciones, en dos o tres frases.
-- questions: hasta 5 preguntas abiertas que el autor debe responder antes de seguir adelante.
+- questions: como máximo {MAX_QUESTIONS} preguntas abiertas, solo sobre las objeciones con in_beam = true (las {BEAM_K} más fuertes): lo que el autor debe responder antes de seguir adelante; si ninguna tiene in_beam = true, devuelve una lista vacía.
 - global_verdict: proceed (ninguna objeción válida grave), adjust (objeciones graves con una solución plausible) o \
 drop (objeciones probables y graves sin una solución clara); escribe el valor exactamente así, en inglés.
 - Escribe en el mismo idioma que la idea.
