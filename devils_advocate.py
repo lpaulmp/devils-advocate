@@ -1,8 +1,38 @@
 # %% [markdown]
 # # Devil's Advocate — Claude + Grok
-# Takes an idea and looks for reasons why it would **not** be a good one.
-# Critic (Claude) and Auditor (Grok) run in rounds with beam-search pruning, the Judge (Claude) writes the
-# synthesis, and the report is printed and saved as Markdown. Every call is checked against a USD budget.
+#
+# **The problem.** When I get excited about an idea or an architecture, I look for reasons it will work
+# and miss the reasons it won't. Asking one model for criticism gives one point of view, and models tend
+# to agree with whoever asks. This agent forces the opposite: one model attacks the idea, a model from a
+# different provider audits that attack, and a judge writes a balanced, prioritized report.
+#
+# **How to use this notebook.** Set the variables in the *Run* cell at the end and run all cells. With
+# `DRY_RUN = True` it makes no API calls (simulated answers). With `DRY_RUN = False` it calls Claude and Grok;
+# the keys are read from the macOS keychain or the `ANTHROPIC_API_KEY` / `XAI_API_KEY` variables, or asked
+# for without being shown. The same file is also a command-line tool: `python devils_advocate.py --help`.
+#
+# ## Roles
+#
+# | Role | Model (default) | Max output | Task |
+# |---|---|---|---|
+# | Critic | Claude `claude-haiku-5-5` | 1000 tokens | At most 5 objections: hidden premises, failures, edge cases, costs, security |
+# | Auditor | Grok `grok-4.20-0309-non-reasoning` | 1000 tokens | Rates each objection *valid*, *exaggerated* or *incorrect* and adds up to 3 edge cases |
+# | Judge | Claude `claude-sonnet-5-5` | 1500 tokens | Consensus, disagreements, steelman, open questions and a verdict (*proceed* / *adjust* / *drop*) |
+#
+# Their system prompts are the `CRITIC_SYSTEM`, `AUDITOR_SYSTEM` and `JUDGE_SYSTEM` constants below. Every
+# answer must match a JSON schema and is validated with pydantic.
+#
+# ## Information flow
+#
+# ```
+# idea ──► masking ──► Critic ──► Auditor ──► pruning (beam, k = 3) ──┐
+#                        ▲                                           │ next round: the Critic sees the beam
+#                        └───────────────────────────────────────────┘
+#          after the last round (or when nothing new appears) ──► Judge ──► report (terminal + Markdown file)
+# ```
+#
+# Only the **masked** idea leaves the machine: keys, tokens, IPs, ARNs, account ids, emails and your own
+# terms are replaced by placeholders such as `[IP]` before any call.
 
 # %%
 import argparse
@@ -251,7 +281,7 @@ def simulate_judge(idea: str, ledger, beam) -> JudgeResponse:
 
 # %%
 DEFAULT_MODELS = {"critic": "claude-haiku-5-5", "auditor": "grok-4.20-0309-non-reasoning", "judge": "claude-sonnet-5-5"}
-MAX_TOKENS = {"critic": 600, "auditor": 500, "judge": 700}
+MAX_TOKENS = {"critic": 1000, "auditor": 1000, "judge": 1500}
 XAI_BASE_URL = "https://api.x.ai/v1"
 MAX_IDEA_CHARS = 20_000  # about 5k tokens
 API_TIMEOUT = 60  # seconds
@@ -300,6 +330,15 @@ not add edge cases that repeat or rephrase them.
 - Placeholders such as [IP], [EMAIL] or [TERM] hide confidential data; treat them as ordinary values."""
 
 
+# %% [markdown]
+# ## Cost control
+# Each call has a `max_tokens` cap, and a run makes at most `2 × rounds + 1` calls (Critic and Auditor per
+# round, plus the Judge). Before every call the cost is estimated in the worst case (estimated input plus
+# the full output cap) with the prices from `config.toml`; if it could exceed the budget, the rounds stop
+# and the report is written with what exists. One call and part of the budget are always kept for the
+# Judge. At the end, a table shows the real tokens and cost per role and model.
+
+# %%
 class RoleError(RuntimeError):
     """A role could not produce a valid answer."""
 
@@ -432,6 +471,16 @@ def describe_error(e: Exception) -> str:
 ROLE_ERRORS = (RoleError, CallLimitReached, anthropic.APIError, openai.APIError)
 
 
+def start_attempt(session: Session, role: str, problem: str, **call):
+    """Count one attempt. If the cap or the budget blocks a retry, report why the first attempt failed too."""
+    try:
+        session.start_call(**call)
+    except CallLimitReached as e:
+        if not problem:
+            raise
+        raise RoleError(f"the {role} returned an invalid answer ({problem}); no retry: {e}") from e
+
+
 def call_critic(client, session: Session, idea: str, model: str = DEFAULT_MODELS["critic"], focus=()) -> CriticResponse:
     content = wrap_idea(idea)
     if focus:
@@ -441,7 +490,7 @@ def call_critic(client, session: Session, idea: str, model: str = DEFAULT_MODELS
         max_tokens=MAX_TOKENS["critic"],
         system=CRITIC_SYSTEM,
         messages=[{"role": "user", "content": content}],
-        # Thinking counts toward max_tokens; with the 600-token cap it could leave no room for
+        # Thinking counts toward max_tokens; with the 1000-token cap it could leave no room for
         # the JSON, so it is turned off (allowed at effort low).
         thinking={"type": "disabled"},
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": anthropic.transform_schema(CriticResponse)}},
@@ -449,7 +498,7 @@ def call_critic(client, session: Session, idea: str, model: str = DEFAULT_MODELS
     estimate = estimate_tokens(CRITIC_SYSTEM, content, json.dumps(request["output_config"]))
     problem = ""
     for _ in range(2):  # first attempt + one retry
-        session.start_call(reserve=1, model=model, input_tokens=estimate, max_output=MAX_TOKENS["critic"])
+        start_attempt(session, "Critic", problem, reserve=1, model=model, input_tokens=estimate, max_output=MAX_TOKENS["critic"])
         response = client.messages.create(**request)
         session.record("critic", response.usage.input_tokens, response.usage.output_tokens, model)
         if response.stop_reason == "refusal":
@@ -511,7 +560,7 @@ def call_auditor(client, session: Session, idea: str, objections: list[Objection
     estimate = estimate_tokens(AUDITOR_SYSTEM, content, json.dumps(request["response_format"]))
     problem = ""
     for _ in range(2):  # first attempt + one retry
-        session.start_call(reserve=1, model=model, input_tokens=estimate, max_output=MAX_TOKENS["auditor"])
+        start_attempt(session, "Auditor", problem, reserve=1, model=model, input_tokens=estimate, max_output=MAX_TOKENS["auditor"])
         response = client.chat.completions.create(**request)
         if response.usage:
             session.record("auditor", response.usage.prompt_tokens, response.usage.completion_tokens, model)
@@ -540,6 +589,12 @@ def call_auditor(client, session: Session, idea: str, objections: list[Objection
 # *valid or new* objections stay in the beam for the next round. Exaggerated or incorrect objections
 # are kept in the ledger (the Judge will see the disagreements) but never enter the beam.
 # The loop stops early when the Critic finds nothing new (convergence) or a role fails.
+#
+# **Link to Week 3 (heuristic search).** A* keeps the whole frontier ordered by `f = g + h`; *beam search*
+# keeps only the `k` best nodes at each depth and discards the rest, trading completeness for a fixed cost.
+# Here a node is an objection, the heuristic is `h = severity × probability`, the depth is the round and
+# `k = 3`: each round only develops the three most promising objections, so the number of API calls stays
+# bounded no matter how many objections appear.
 # Known limit: the Auditor is shown only the current beam, so it may re-add an edge case that has
 # already dropped out of it; the duplicate appears twice in the ledger but rarely re-enters the beam.
 
@@ -641,7 +696,7 @@ def judge_request(model: str, idea: str, ledger: list[Entry], beam: list[Entry])
         output_config={"effort": "medium", "format": {"type": "json_schema", "schema": anthropic.transform_schema(JudgeResponse)}},
     )
     if model == "claude-sonnet-5-5":
-        # Thinking off, so all 700 tokens go to the answer (only Sonnet 5.5 accepts it; needs effort ≤ high).
+        # Thinking off, so all 1500 tokens go to the answer (only Sonnet 5.5 accepts it; needs effort ≤ high).
         # Other models keep their default thinking, which also counts toward max_tokens.
         request["thinking"] = {"type": "between_tools"}
     if model in FALLBACK_MODELS:
@@ -699,7 +754,7 @@ def call_judge(client, session: Session, idea: str, ledger: list[Entry], beam: l
     problem = ""
     for _ in range(2):  # first attempt + one retry, if the cap and the budget still allow it
         # A fallback bills the declining model and the fallback model: budget two attempts.
-        session.start_call(model=model, input_tokens=estimate, max_output=MAX_TOKENS["judge"], attempts=2)
+        start_attempt(session, "Judge", problem, model=model, input_tokens=estimate, max_output=MAX_TOKENS["judge"], attempts=2)
         response = client.beta.messages.create(**request)
         record_judge_usage(session, response, model)
         if response.stop_reason == "refusal":
@@ -1044,6 +1099,20 @@ def configure():
     console.print(f"Config template created: {escape(shown_path(path))}. Add your prices there.", soft_wrap=True)
 
 
+def notebook_run(idea: str, rounds: int = 1, budget: float = 0.10, dry_run: bool = True):
+    """Run from a notebook: same flow as the CLI, arguments from variables, keys asked for if missing."""
+    if not dry_run:
+        for provider, (service, env_var) in API_KEYS.items():
+            if not get_api_key(provider):
+                os.environ[env_var] = getpass.getpass(f"{provider} API key (not stored, not shown): ").strip()
+    argv = ["--rounds", str(rounds), "--budget", str(budget), *(["--dry-run"] if dry_run else []), "--", idea]
+    try:
+        main(argv)
+    except SystemExit as e:
+        if e.code:
+            console.print(f"[red]Stopped (exit code {e.code}).[/red]")
+
+
 def main(argv=None):
     args = parse_args(argv)
     if args.configure:
@@ -1058,5 +1127,24 @@ def main(argv=None):
     run(idea, args.rounds, args.budget, args.dry_run, args.local, terms, cfg.get("models", {}), cfg.get("prices", {}))
 
 
+# %% [markdown]
+# ## Run
+# Edit the variables and run all cells. `DRY_RUN = False` makes real API calls (a few cents at most with
+# `ROUNDS = 1`; see the cost table at the end of the output).
+#
+# Notes: a key typed here lives only in this kernel; if it was wrong, restart the kernel to be asked again.
+# Without prices in `~/.config/devils-advocate/config.toml` the budget cannot be enforced, and only the
+# `max_tokens` caps limit the cost.
+
+# %%
+IDEA = "Move our whole database to a single large server to save money"
+ROUNDS = 1
+BUDGET = 0.10
+DRY_RUN = True
+
+# %%
 if __name__ == "__main__":
-    main()
+    if "ipykernel" in sys.modules:
+        notebook_run(IDEA, ROUNDS, BUDGET, DRY_RUN)
+    else:
+        main()

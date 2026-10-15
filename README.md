@@ -6,7 +6,7 @@
 
 A command-line agent that looks for reasons why an idea or architecture would **not** be a good one: hidden premises, failure modes and edge cases. Claude critiques, Grok audits the critique, and a judge writes a prioritized report.
 
-> **Status:** stage 5. Critic (Claude), Auditor (Grok) and Judge (Claude) make real calls within a USD budget, and the report is saved. `--dry-run` makes no API calls.
+> **Status:** complete (stages 1–6). Critic (Claude), Auditor (Grok) and Judge (Claude) make real calls within a USD budget, the report is saved, and the same code is published as a notebook. `--dry-run` makes no API calls.
 
 ### Usage
 ```bash
@@ -19,7 +19,7 @@ python devils_advocate.py --budget 0.05 -f idea.md
 python -m pytest -q
 ```
 
-The Critic uses `claude-haiku-5-5` (at most 600 output tokens per call), the Auditor `grok-4.20-0309-non-reasoning` (at most 500) and the Judge `claude-sonnet-5-5` (at most 700). Change them in `config.toml`:
+The Critic uses `claude-haiku-5-5` (at most 1000 output tokens per call), the Auditor `grok-4.20-0309-non-reasoning` (at most 1000) and the Judge `claude-sonnet-5-5` (at most 1500). Change them in `config.toml`:
 ```toml
 [models]
 critic = "claude-sonnet-5-5"
@@ -44,9 +44,15 @@ Prices are **not** built in: copy them (USD per million tokens) from each consol
 "grok-4.20-0309-non-reasoning" = { input = ..., output = ... }
 "claude-sonnet-5-5" = { input = ..., output = ... }
 ```
-Before each call the tool estimates its worst-case cost (estimated input plus the full output cap). If the call could take the run over `--budget` (default $0.10), the rounds stop and the report is written with what exists; a share of the budget is always kept for the Judge. If the budget cannot cover even the first Critic call plus the Judge's share, the run stops before any call and no report is written. The budget is a best-effort cap: the input size is estimated, a Judge fallback is priced as the requested model, and a call that times out is not counted. Use a non-reasoning Auditor model. At the end it prints a cost table per role and model. A model without a price is counted in tokens only, and the tool warns that the budget cannot cover it.
+Before each call the tool estimates its worst-case cost (estimated input plus the full output cap). If the call could take the run over `--budget` (default $0.10), the rounds stop and the report is written with what exists; a share of the budget is always kept for the Judge. If the budget cannot cover even the first Critic call plus the Judge's share, the run stops before any call and no report is written. The budget is a best-effort cap: the input size is estimated, a Judge fallback is priced as the requested model, and a call that times out is not counted. A very long idea with `--rounds 2` or `3` may need a larger `--budget`. Use a non-reasoning Auditor model. At the end it prints a cost table per role and model. A model without a price is counted in tokens only, and the tool warns that the budget cannot cover it.
 
 Also set a spend limit on console.anthropic.com and turn auto top-up **off** on console.x.ai.
+
+### Notebook
+`devils_advocate.ipynb` is generated from `devils_advocate.py`: the same code without comments or docstrings, explained by its markdown cells, with an example (simulated) run. Open it, edit the variables in the last cells (`IDEA`, `ROUNDS`, `BUDGET`, `DRY_RUN`) and run all cells. With `DRY_RUN = False` it asks for any missing API key without showing or storing it. To rebuild it after changing the code:
+```bash
+python tools/build_notebook.py --execute
+```
 
 ### How objections are ranked
 Every objection gets two scores from 1 to 5:
@@ -78,7 +84,7 @@ The tool prints how many replacements were made.
 
 Un agente de línea de comandos que busca razones por las que una idea o arquitectura **no** sería buena: premisas ocultas, modos de fallo y casos límite. Claude critica, Grok audita la crítica y un juez escribe un informe priorizado.
 
-> **Estado:** etapa 5. Crítico (Claude), Auditor (Grok) y Juez (Claude) hacen llamadas reales dentro de un presupuesto en USD, y el informe se guarda. `--dry-run` no hace llamadas a APIs.
+> **Estado:** completo (etapas 1–6). Crítico (Claude), Auditor (Grok) y Juez (Claude) hacen llamadas reales dentro de un presupuesto en USD, el informe se guarda y el mismo código se publica como notebook. `--dry-run` no hace llamadas a APIs.
 
 ### Uso
 ```bash
@@ -91,7 +97,7 @@ python devils_advocate.py --budget 0.05 -f idea.md
 python -m pytest -q
 ```
 
-El Crítico usa `claude-haiku-5-5` (máximo 600 tokens de salida por llamada), el Auditor `grok-4.20-0309-non-reasoning` (máximo 500) y el Juez `claude-sonnet-5-5` (máximo 700). Los modelos se cambian en `config.toml` (sección `[models]`, ver arriba).
+El Crítico usa `claude-haiku-5-5` (máximo 1000 tokens de salida por llamada), el Auditor `grok-4.20-0309-non-reasoning` (máximo 1000) y el Juez `claude-sonnet-5-5` (máximo 1500). Los modelos se cambian en `config.toml` (sección `[models]`, ver arriba).
 
 ### Rondas
 En cada ronda el Crítico plantea objeciones y el Auditor califica cada una (*valid*, *exaggerated* o *incorrect*) y añade hasta 3 casos límite. Solo las 3 objeciones válidas o nuevas más fuertes (el *beam*) pasan a la siguiente ronda, donde el Crítico debe encontrar otras nuevas. La ejecución termina tras `--rounds` (2 por defecto) o antes si el Crítico no encuentra nada nuevo. Se hacen como máximo `2 × rondas + 1` llamadas; la última siempre se reserva para el Juez.
@@ -103,9 +109,12 @@ El Juez lee todas las objeciones con su veredicto y escribe la síntesis: consen
 ### Claves, precios y presupuesto
 `--configure` pide las claves de Anthropic y xAI sin mostrarlas y las guarda en el llavero de macOS (también sirven `ANTHROPIC_API_KEY` y `XAI_API_KEY`). Además crea `~/.config/devils-advocate/config.toml` si no existe.
 
-Los precios **no** vienen incluidos: cópialos (USD por millón de tokens) de la página de precios de cada consola en `config.toml`, en la sección `[prices]` (ver el ejemplo de arriba). Antes de cada llamada se estima su coste máximo (entrada estimada más el límite de salida completo). Si la llamada pudiera superar `--budget` (0,10 USD por defecto), las rondas se detienen y el informe se escribe con lo que haya; siempre se reserva una parte del presupuesto para el Juez. Si el presupuesto no cubre ni la primera llamada del Crítico más la parte del Juez, se detiene antes de cualquier llamada y no se escribe informe. El presupuesto es un límite aproximado: el tamaño de la entrada se estima, un fallback del Juez se valora al precio del modelo pedido y una llamada que agota el tiempo no se cuenta. Usa un modelo de Auditor sin razonamiento. Al final se muestra una tabla de costes por rol y modelo. Un modelo sin precio se cuenta solo en tokens, y la herramienta avisa de que el presupuesto no lo cubre.
+Los precios **no** vienen incluidos: cópialos (USD por millón de tokens) de la página de precios de cada consola en `config.toml`, en la sección `[prices]` (ver el ejemplo de arriba). Antes de cada llamada se estima su coste máximo (entrada estimada más el límite de salida completo). Si la llamada pudiera superar `--budget` (0,10 USD por defecto), las rondas se detienen y el informe se escribe con lo que haya; siempre se reserva una parte del presupuesto para el Juez. Si el presupuesto no cubre ni la primera llamada del Crítico más la parte del Juez, se detiene antes de cualquier llamada y no se escribe informe. El presupuesto es un límite aproximado: el tamaño de la entrada se estima, un fallback del Juez se valora al precio del modelo pedido y una llamada que agota el tiempo no se cuenta. Una idea muy larga con `--rounds 2` o `3` puede necesitar un `--budget` mayor. Usa un modelo de Auditor sin razonamiento. Al final se muestra una tabla de costes por rol y modelo. Un modelo sin precio se cuenta solo en tokens, y la herramienta avisa de que el presupuesto no lo cubre.
 
 Pon también un límite de gasto en console.anthropic.com y desactiva la recarga automática en console.x.ai.
+
+### Notebook
+`devils_advocate.ipynb` se genera a partir de `devils_advocate.py`: el mismo código sin comentarios ni docstrings, explicado en sus celdas markdown, con una ejecución de ejemplo (simulada). Ábrelo, cambia las variables de las últimas celdas (`IDEA`, `ROUNDS`, `BUDGET`, `DRY_RUN`) y ejecuta todas las celdas. Con `DRY_RUN = False` pide las claves que falten sin mostrarlas ni guardarlas. Para regenerarlo tras cambiar el código: `python tools/build_notebook.py --execute`.
 
 ### Cómo se ordenan las objeciones
 Cada objeción recibe dos notas del 1 al 5:

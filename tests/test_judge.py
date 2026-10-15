@@ -33,7 +33,7 @@ def test_request_respects_spec():
     assert judge.global_verdict == "adjust" and served_by == ""  # no fallback
     request = claude.judge.requests[0]
     assert request["model"] == "claude-sonnet-5-5"
-    assert request["max_tokens"] == 700
+    assert request["max_tokens"] == 1500
     assert request["thinking"] == {"type": "between_tools"}
     assert request["output_config"]["effort"] == "medium"
     assert request["output_config"]["format"]["type"] == "json_schema"
@@ -78,11 +78,33 @@ def test_refusal_is_not_retried():
 
 def test_judge_uses_the_reserved_call_but_no_more():
     claude = FakeClaude()
-    claude.judge.queue = [judge_response("nope")]
+    claude.judge.queue = [judge_response('{"consensus": ["cut', stop_reason="max_tokens")]
     session = da.Session(max_calls=3, calls=2)  # only the reserved call is left
-    with pytest.raises(da.CallLimitReached):
+    with pytest.raises(da.RoleError) as failure:
         da.call_judge(claude, session, "idea", *entries())
     assert len(claude.judge.requests) == 1 and session.calls == 3
+    # The message gives the first attempt's cause, not only the cap that blocked the retry.
+    assert "stop_reason=max_tokens" in str(failure.value) and "no retry: call cap reached" in str(failure.value)
+
+
+def test_budget_blocking_the_retry_keeps_the_first_cause(monkeypatch):
+    monkeypatch.setattr(da, "estimate_tokens", lambda *texts: 1000)
+    # Each attempt is budgeted as 2 × (1000 + 1500) × $100/M = $0.50: the first fits $0.54; after it ($0.05 spent)
+    # the retry does not.
+    claude = FakeClaude()
+    claude.judge.queue = [judge_response('{"consensus": ["cut', stop_reason="max_tokens")]
+    session = da.Session(max_calls=5, budget=0.54, prices={"claude-sonnet-5-5": {"input": 100.0, "output": 100.0}})
+    with pytest.raises(da.RoleError) as failure:
+        da.call_judge(claude, session, "idea", [], [])
+    assert len(claude.judge.requests) == 1
+    assert "stop_reason=max_tokens" in str(failure.value) and "no retry: budget would be exceeded" in str(failure.value)
+
+
+def test_judge_without_any_call_left_reports_the_cap():
+    claude = FakeClaude()
+    with pytest.raises(da.CallLimitReached):
+        da.call_judge(claude, da.Session(max_calls=3, calls=3), "idea", *entries())
+    assert claude.judge.requests == []
 
 
 def test_ledger_text_cannot_close_its_tag():
@@ -123,7 +145,7 @@ def test_real_sdk_sends_fallback_beta_and_parameters():
     assert "server-side-fallback-2026-07-01" in seen["beta"]
     assert seen["body"]["fallbacks"] == "default"
     assert seen["body"]["thinking"] == {"type": "between_tools"}
-    assert seen["body"]["max_tokens"] == 700
+    assert seen["body"]["max_tokens"] == 1500
 
 
 def test_real_sdk_fallback_response_is_parsed_in_one_call():

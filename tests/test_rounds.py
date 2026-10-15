@@ -154,7 +154,7 @@ def test_live_rounds_cap_stops_the_run_before_rounds_do(live):
     da.main(["--rounds", "2", "an idea"])
     out = live.out.getvalue()
     assert "calls: 5/5" in out  # 4 for the rounds + the Judge's reserved call
-    assert "Round 2: Critic failed (call cap reached" in out
+    assert "Round 2: Critic failed (the Critic returned an invalid answer (" in out and "no retry: call cap reached" in out
     assert len(live.claude.judge.requests) == 1
     assert len(live.claude.requests) == 3 and len(live.grok.requests) == 1
 

@@ -83,7 +83,7 @@ def test_estimate_is_conservative():
 
 def test_judge_budgets_two_attempts(monkeypatch):
     monkeypatch.setattr(da, "estimate_tokens", lambda *texts: 1000)
-    # One attempt would cost (1000 + 700) × $100/M = $0.17; a fallback could bill two: $0.34 > $0.30.
+    # One attempt would cost (1000 + 1500) × $100/M = $0.25; a fallback could bill two: $0.50 > $0.30.
     session = da.Session(max_calls=3, budget=0.30, prices={"claude-sonnet-5-5": {"input": 100.0, "output": 100.0}})
     claude = FakeClaude()
     with pytest.raises(da.BudgetExceeded):
@@ -113,22 +113,22 @@ def live(monkeypatch, tmp_path):
 
 
 # With prices of $100/M and estimate 1000 input tokens:
-#   Critic estimate (1000 + 600) → $0.16, Auditor (1000 + 500) → $0.15,
-#   Judge share kept during the rounds 2 × (1000 + 3000 + 700) → $0.94.
+#   Critic estimate (1000 + 1000) → $0.20, Auditor (1000 + 1000) → $0.20,
+#   Judge share kept during the rounds 2 × (1000 + 3000 + 1500) → $1.10.
 #   Real usage: Critic 150 tokens → $0.015, Auditor 120 → $0.012, Judge 500 → $0.05.
 
 def test_budget_stops_the_rounds_but_keeps_the_judge(live, isolated_history):
     (live.tmp / "config.toml").write_text(prices_toml(PRICES), encoding="utf-8")
-    da.main(["--budget", "1.12", "an idea"])
+    da.main(["--budget", "1.32", "an idea"])
     out = live.out.getvalue()
     assert len(live.claude.requests) == 1 and len(live.grok.requests) == 1  # round 2's Critic would exceed
     assert "Round 2: Critic failed (budget would be exceeded" in out
     assert len(live.claude.judge.requests) == 1                            # the Judge still runs
-    assert "$0.0770 of $1.12" in out                                       # 0.015 + 0.012 + 0.05
+    assert "$0.0770 of $1.32" in out                                       # 0.015 + 0.012 + 0.05
     [report] = sorted(isolated_history.glob("*.md"))
     text = report.read_text(encoding="utf-8")
     assert "## Verdict: ADJUST" in text and "budget would be exceeded" in text
-    assert "| **total** | | | | **$0.0770** of $1.12 |" in text
+    assert "| **total** | | | | **$0.0770** of $1.32 |" in text
 
 
 def test_budget_too_small_for_anything_exits_cleanly(live, isolated_history):
@@ -229,9 +229,9 @@ def test_each_role_checks_the_budget_with_its_own_model_and_estimate(live, monke
     monkeypatch.setattr(da.Session, "start_call", spy)
     da.main(["--rounds", "1", "an idea"])
     critic, auditor, judge = calls
-    assert (critic["model"], critic["max_output"], critic["reserve"]) == ("claude-haiku-5-5", 600, 1)
-    assert (auditor["model"], auditor["max_output"], auditor["reserve"]) == ("grok-4.20-0309-non-reasoning", 500, 1)
-    assert (judge["model"], judge["max_output"], judge["reserve"], judge["attempts"]) == ("claude-sonnet-5-5", 700, 0, 2)
+    assert (critic["model"], critic["max_output"], critic["reserve"]) == ("claude-haiku-5-5", 1000, 1)
+    assert (auditor["model"], auditor["max_output"], auditor["reserve"]) == ("grok-4.20-0309-non-reasoning", 1000, 1)
+    assert (judge["model"], judge["max_output"], judge["reserve"], judge["attempts"]) == ("claude-sonnet-5-5", 1500, 0, 2)
     # Each estimate covers everything the request sends: system prompt, content and output schema.
     c, a, j = live.claude.requests[0], live.grok.requests[0], live.claude.judge.requests[0]
     assert [critic["input_tokens"], auditor["input_tokens"], judge["input_tokens"]] == [
@@ -242,9 +242,9 @@ def test_each_role_checks_the_budget_with_its_own_model_and_estimate(live, monke
 
 
 def test_budget_can_block_the_auditor(live, isolated_history):
-    # Critic: 0 + 0.16 + 0.94 kept ≤ 1.102; Auditor: 0.015 + 0.15 + 0.94 = 1.105 > 1.102.
+    # Critic: 0 + 0.20 + 1.10 kept ≤ 1.31; Auditor: 0.015 + 0.20 + 1.10 = 1.315 > 1.31.
     (live.tmp / "config.toml").write_text(prices_toml(PRICES), encoding="utf-8")
-    da.main(["--budget", "1.102", "--rounds", "1", "an idea"])
+    da.main(["--budget", "1.31", "--rounds", "1", "an idea"])
     out = live.out.getvalue()
     assert live.grok.requests == []
     assert "Round 1: Auditor failed (budget would be exceeded" in out
