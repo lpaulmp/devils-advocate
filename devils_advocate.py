@@ -1,40 +1,58 @@
 # %% [markdown]
-# # Devil's Advocate — Claude + Grok
+# # Abogado del diablo — Claude + Grok
 #
-# **The problem.** When I get excited about an idea or an architecture, I look for reasons it will work
-# and miss the reasons it won't. Asking one model for criticism gives one point of view, and models tend
-# to agree with whoever asks. This agent forces the opposite: one model attacks the idea, a model from a
-# different provider audits that attack, and a judge writes a balanced, prioritized report.
+# **El problema.** Al decidir una tecnología o empezar un proyecto es fácil ver los pros y pasar por alto los
+# contras. Pedirle opinión a un modelo de IA ayuda poco: suele resumir y ordenar la idea en vez de refutarla.
+# Este agente fuerza lo contrario: un modelo ataca la idea, un modelo de otro proveedor audita ese ataque y un
+# juez escribe un informe equilibrado y priorizado.
 #
-# **How to use this notebook.** Set the variables in the *Run* cell at the end and run all cells. With
-# `DRY_RUN = True` it makes no API calls (simulated answers). With `DRY_RUN = False` it calls Claude and Grok;
-# the keys are read from the macOS keychain or the `ANTHROPIC_API_KEY` / `XAI_API_KEY` variables, or asked
-# for without being shown. The same file is also a command-line tool: `python devils_advocate.py --help`.
+# **Cómo usar este notebook.** Ajusta las variables de la celda *Ejecutar* al final y ejecuta todas las celdas.
+# Con `DRY_RUN = True` no se hace ninguna llamada a las APIs (respuestas simuladas). Con `DRY_RUN = False` se
+# llama a Claude y a Grok; las claves se leen del llavero de macOS o de las variables `ANTHROPIC_API_KEY` /
+# `XAI_API_KEY`, o se piden sin mostrarlas. El `devils_advocate.py` del repositorio también es una herramienta
+# de línea de comandos (`--help`); el código exclusivo de la línea de comandos no se incluye en este notebook.
 #
 # ## Roles
 #
-# | Role | Model (default) | Max output | Task |
+# | Rol | Modelo (por defecto) | Salida máxima | Tarea |
 # |---|---|---|---|
-# | Critic | Claude `claude-haiku-5-5` | 1000 tokens | At most 5 objections: hidden premises, failures, edge cases, costs, security |
-# | Auditor | Grok `grok-4.20-0309-non-reasoning` | 1000 tokens | Rates each objection *valid*, *exaggerated* or *incorrect* and adds up to 3 edge cases |
-# | Judge | Claude `claude-sonnet-5-5` | 1500 tokens | Consensus, disagreements, steelman, open questions and a verdict (*proceed* / *adjust* / *drop*) |
+# | Crítico | Claude `claude-haiku-5-5` | 1000 tokens | Hasta 5 objeciones: premisas ocultas, fallos, casos límite, costos, seguridad |
+# | Auditor | Grok `grok-4.20-0309-non-reasoning` | 1000 tokens | Califica cada objeción como *valid* (válida), *exaggerated* (exagerada) o *incorrect* (incorrecta) y añade hasta 3 casos límite |
+# | Juez | Claude `claude-sonnet-5-5` | 1500 tokens | Consenso, desacuerdos, *steelman*, preguntas abiertas y un veredicto (*proceed* / *adjust* / *drop*) |
 #
-# Their system prompts are the `CRITIC_SYSTEM`, `AUDITOR_SYSTEM` and `JUDGE_SYSTEM` constants below. Every
-# answer must match a JSON schema and is validated with pydantic.
+# Sus instrucciones de sistema son las constantes `CRITIC_SYSTEM`, `AUDITOR_SYSTEM` y `JUDGE_SYSTEM` de más
+# abajo (en inglés, como las ven los modelos). Cada respuesta debe cumplir un esquema JSON y se valida con pydantic.
 #
-# ## Information flow
+# ## Flujo de información
 #
 # ```
-# idea ──► masking ──► Critic ──► Auditor ──► pruning (beam, k = 3) ──┐
-#                        ▲                                           │ next round: the Critic sees the beam
-#                        └───────────────────────────────────────────┘
-#          after the last round (or when nothing new appears) ──► Judge ──► report (terminal + Markdown file)
+# idea ──► enmascarado ──► Crítico ──► Auditor ──► poda (beam, k = 3) ──┐
+#                            ▲                                          │ siguiente ronda: el Crítico ve el beam
+#                            └──────────────────────────────────────────┘
+#          tras la última ronda (o si no aparece nada nuevo) ──► Juez ──► informe (terminal + archivo Markdown)
 # ```
 #
-# Only the **masked** idea leaves the machine: keys, tokens, IPs, ARNs, account ids, emails and your own
-# terms are replaced by placeholders such as `[IP]` before any call.
+# Solo la idea **enmascarada** sale de la máquina: claves, tokens, IPs, ARNs, IDs de cuenta, emails y tus
+# propios términos se reemplazan por marcadores como `[IP]` antes de cualquier llamada.
+#
+# **En Google Colab.** La primera celda de código instala las dependencias (tarda unos segundos). Para una
+# corrida real, guarda las claves en los *Secrets* de Colab (icono de llave a la izquierda) con los nombres
+# `ANTHROPIC_API_KEY` y `XAI_API_KEY` y dale acceso al notebook; si no están, el notebook las pide sin mostrarlas.
+# Si después de la instalación Colab pide reiniciar la sesión, reiníciala y vuelve a ejecutar todas las celdas.
+# En Colab no hay `config.toml` con precios, así que `BUDGET` no se aplica: el costo lo acotan los límites de
+# tokens y de llamadas (con `ROUNDS = 1`, 3 llamadas y como máximo 3500 tokens de salida, unos pocos centavos).
 
 # %%
+# In Google Colab, install what is not preinstalled (the minimum versions from requirements.txt).
+import subprocess
+import sys
+
+if "google.colab" in sys.modules:
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "anthropic>=1.13", "openai>=3.29",
+                    "keyring>=25", "pydantic>=2.7", "rich>=13"], check=True)
+
+# %%
+# cli-only
 import argparse
 import getpass
 import ipaddress
@@ -65,7 +83,7 @@ CONFIG_PATH = "~/.config/devils-advocate/config.toml"
 HISTORY_DIR = "~/devils-advocate/history"
 
 # %% [markdown]
-# ## JSON schemas (pydantic)
+# ## Esquemas JSON (pydantic)
 
 # %%
 Kind = Literal["premise", "failure", "edge_case", "cost", "security"]
@@ -122,18 +140,18 @@ class JudgeResponse(BaseModel):
 
 
 # %% [markdown]
-# ## Masking filter
-# Applied to the idea before it is sent to any model.
-# Over-masking is accepted (e.g. a version like `1.2.3.4` becomes `[IP]`): it is safe.
+# ## Filtro de enmascarado
+# Se aplica a la idea antes de enviarla a cualquier modelo.
+# Se acepta enmascarar de más (por ejemplo, una versión como `1.2.3.4` se convierte en `[IP]`): es seguro.
 #
-# Known limits:
-# - A secret glued to a preceding letter, digit or `_` can leak in part or whole, because the
-#   patterns need a boundary to know where it starts. Examples: `x2001:db8::1`, `id_fe80::1`,
-#   `host10.0.0.1`, `acct123456789012`, an `AKIA…` key immediately followed by an `xai-…` token.
-#   Keep secrets separated by spaces or punctuation, or add them to `[mask] terms`.
-# - An email whose local part contains one of ``!#$&*/=?^`{|}~`` is masked only after the last
-#   such character (`a!b@example.com` → `a![EMAIL]`). Add the address to `[mask] terms`.
-# - IPv6 in non-standard forms, such as a full address followed by `::port`, may not be masked.
+# Límites conocidos:
+# - Un secreto pegado a una letra, un dígito o un `_` anterior puede filtrarse en parte o completo, porque los
+#   patrones necesitan un límite para saber dónde empieza. Ejemplos: `x2001:db8::1`, `id_fe80::1`,
+#   `host10.0.0.1`, `acct123456789012`, una clave `AKIA…` seguida inmediatamente de un token `xai-…`.
+#   Separa los secretos con espacios o puntuación, o agrégalos a `[mask] terms`.
+# - Un email cuya parte local contiene uno de ``!#$&*/=?^`{|}~`` solo se enmascara después del último
+#   de esos caracteres (`a!b@example.com` → `a![EMAIL]`). Agrega la dirección a `[mask] terms`.
+# - Las IPv6 en formas no estándar, como una dirección completa seguida de `::puerto`, pueden no enmascararse.
 
 
 # %%
@@ -242,7 +260,7 @@ def load_mask_terms(path: str | Path | None = None) -> list[str]:
 
 
 # %% [markdown]
-# ## Simulated responses (`--dry-run`)
+# ## Respuestas simuladas (`--dry-run`)
 
 # %%
 def simulate_critic(idea: str, focus=()) -> CriticResponse:
@@ -274,10 +292,10 @@ def simulate_judge(idea: str, ledger, beam) -> JudgeResponse:
 
 
 # %% [markdown]
-# ## Critic (Claude)
-# Only the masked idea is sent. The answer is constrained to the `CriticResponse` JSON schema and
-# validated with pydantic; if validation fails the call is retried once. Every attempt, retries
-# included, counts toward the per-run call cap (`2 × rounds + 1`).
+# ## Crítico (Claude)
+# Solo se envía la idea enmascarada. La respuesta está restringida al esquema JSON `CriticResponse` y se
+# valida con pydantic; si la validación falla, la llamada se reintenta una vez. Cada intento, reintentos
+# incluidos, cuenta para el límite de llamadas por corrida (`2 × rondas + 1`).
 
 # %%
 DEFAULT_MODELS = {"critic": "claude-haiku-5-5", "auditor": "grok-4.20-0309-non-reasoning", "judge": "claude-sonnet-5-5"}
@@ -331,12 +349,12 @@ not add edge cases that repeat or rephrase them.
 
 
 # %% [markdown]
-# ## Cost control
-# Each call has a `max_tokens` cap, and a run makes at most `2 × rounds + 1` calls (Critic and Auditor per
-# round, plus the Judge). Before every call the cost is estimated in the worst case (estimated input plus
-# the full output cap) with the prices from `config.toml`; if it could exceed the budget, the rounds stop
-# and the report is written with what exists. One call and part of the budget are always kept for the
-# Judge. At the end, a table shows the real tokens and cost per role and model.
+# ## Control de costos
+# Cada llamada tiene un límite `max_tokens`, y una corrida hace como máximo `2 × rondas + 1` llamadas (Crítico y
+# Auditor por ronda, más el Juez). Antes de cada llamada se estima el costo en el peor caso (entrada estimada
+# más el límite de salida completo) con los precios de `config.toml`; si pudiera superar el presupuesto, las
+# rondas se detienen y el informe se escribe con lo que haya. Siempre se reservan una llamada y parte del
+# presupuesto para el Juez. Al final, una tabla muestra los tokens y el costo reales por rol y modelo.
 
 # %%
 class RoleError(RuntimeError):
@@ -430,7 +448,7 @@ def get_api_key(provider: str) -> str | None:
 def make_anthropic_client() -> anthropic.Anthropic:
     key = get_api_key("anthropic")
     if not key:
-        raise RoleError("no Anthropic API key: set ANTHROPIC_API_KEY (or use --configure from stage 5)")
+        raise RoleError("no Anthropic API key: set ANTHROPIC_API_KEY (or run `python devils_advocate.py --configure`)")
     # No SDK retries: each HTTP request must be one counted call, or the call cap could be bypassed.
     return anthropic.Anthropic(api_key=key, max_retries=0, timeout=API_TIMEOUT)
 
@@ -438,7 +456,7 @@ def make_anthropic_client() -> anthropic.Anthropic:
 def make_xai_client() -> openai.OpenAI:
     key = get_api_key("xai")
     if not key:
-        raise RoleError("no xAI API key: set XAI_API_KEY (or use --configure from stage 5)")
+        raise RoleError("no xAI API key: set XAI_API_KEY (or run `python devils_advocate.py --configure`)")
     return openai.OpenAI(api_key=key, base_url=XAI_BASE_URL, max_retries=0, timeout=API_TIMEOUT)
 
 
@@ -513,9 +531,9 @@ def call_critic(client, session: Session, idea: str, model: str = DEFAULT_MODELS
 
 # %% [markdown]
 # ## Auditor (Grok)
-# Grok receives the masked idea and the Critic's objections (ids renumbered for the whole run) and must
-# return exactly one verdict per id, plus up to 3 new edge cases. Same rules as the Critic: JSON schema,
-# pydantic validation, one retry, every attempt counted, and the Judge's call kept in reserve.
+# Grok recibe la idea enmascarada y las objeciones del Crítico (con IDs renumerados para toda la corrida) y debe
+# devolver exactamente un veredicto por ID, más hasta 3 casos límite nuevos. Mismas reglas que el Crítico:
+# esquema JSON, validación con pydantic, un reintento, cada intento contado y la llamada del Juez en reserva.
 
 # %%
 def strict_schema(node):
@@ -582,21 +600,21 @@ def call_auditor(client, session: Session, idea: str, objections: list[Objection
 
 
 # %% [markdown]
-# ## Rounds and pruning
-# Each round the Critic attacks the idea (from round 2 on it also sees the beam and must find new
-# objections) and the Auditor rates them and adds edge cases. **Pruning, beam-search style:**
-# score = severity × probability, and only the top `k = 3` among the previous beam and this round's
-# *valid or new* objections stay in the beam for the next round. Exaggerated or incorrect objections
-# are kept in the ledger (the Judge will see the disagreements) but never enter the beam.
-# The loop stops early when the Critic finds nothing new (convergence) or a role fails.
+# ## Rondas y poda
+# En cada ronda el Crítico ataca la idea (desde la ronda 2 también ve el beam y debe encontrar objeciones
+# nuevas) y el Auditor las califica y añade casos límite. **Poda al estilo beam search:**
+# puntuación = severidad × probabilidad, y solo las `k = 3` mejores entre el beam anterior y las objeciones
+# *válidas o nuevas* de esta ronda se quedan en el beam para la siguiente. Las objeciones exageradas o
+# incorrectas se guardan en el registro (el Juez verá los desacuerdos), pero nunca entran al beam.
+# El bucle se detiene antes si el Crítico no encuentra nada nuevo (convergencia) o si falla un rol.
 #
-# **Link to Week 3 (heuristic search).** A* keeps the whole frontier ordered by `f = g + h`; *beam search*
-# keeps only the `k` best nodes at each depth and discards the rest, trading completeness for a fixed cost.
-# Here a node is an objection, the heuristic is `h = severity × probability`, the depth is the round and
-# `k = 3`: each round only develops the three most promising objections, so the number of API calls stays
-# bounded no matter how many objections appear.
-# Known limit: the Auditor is shown only the current beam, so it may re-add an edge case that has
-# already dropped out of it; the duplicate appears twice in the ledger but rarely re-enters the beam.
+# **Relación con la semana 3 (búsqueda heurística).** A* mantiene toda la frontera ordenada por `f = g + h`;
+# *beam search* conserva solo los `k` mejores nodos en cada profundidad y descarta el resto, cambiando
+# completitud por un costo fijo. Aquí un nodo es una objeción, la heurística es `h = severidad × probabilidad`,
+# la profundidad es la ronda y `k = 3`: cada ronda solo desarrolla las tres objeciones más prometedoras, así que
+# el número de llamadas a las APIs queda acotado sin importar cuántas objeciones aparezcan.
+# Límite conocido: al Auditor solo se le muestra el beam actual, así que puede volver a añadir un caso límite que
+# ya salió de él; el duplicado aparece dos veces en el registro, pero rara vez vuelve a entrar al beam.
 
 # %%
 BEAM_K = 3
@@ -654,10 +672,10 @@ def run_rounds(critic_fn, auditor_fn, idea: str, rounds: int):
 
 
 # %% [markdown]
-# ## Judge (Claude)
-# The Judge reads the masked idea and the whole ledger (verdicts, reasons, beam) and writes the synthesis:
-# consensus, disagreements, a steelman of the idea, open questions and a global verdict. It uses the call
-# kept in reserve. If it fails, the report is still written with what exists.
+# ## Juez (Claude)
+# El Juez lee la idea enmascarada y todo el registro (veredictos, razones, beam) y escribe la síntesis:
+# consenso, desacuerdos, un *steelman* de la idea (el mejor argumento a favor), preguntas abiertas y un
+# veredicto global. Usa la llamada reservada. Si falla, el informe se escribe igual con lo que haya.
 
 # %%
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -767,12 +785,12 @@ def call_judge(client, session: Session, idea: str, ledger: list[Entry], beam: l
 
 
 # %% [markdown]
-# ## Report
-# Printed with rich and saved as Markdown in `~/devils-advocate/history/YYYY-MM-DD_HHMM_<slug>.md`.
-# The report contains only the **masked** idea, so no secret reaches the disk; the file is readable by
-# its owner only.
-# Known limit: two runs with the same slug finishing in the same minute race for the file name; the
-# loser gets a warning and its report is not saved (nothing is overwritten).
+# ## Informe
+# Se muestra con rich y se guarda en Markdown en `~/devils-advocate/history/AAAA-MM-DD_HHMM_<slug>.md`.
+# El informe contiene solo la idea **enmascarada**, así que ningún secreto llega al disco; el archivo solo lo
+# puede leer su dueño.
+# Límite conocido: dos corridas con el mismo slug que terminan en el mismo minuto compiten por el nombre del
+# archivo; la que pierde recibe un aviso y su informe no se guarda (nunca se sobrescribe nada).
 
 # %%
 @dataclass
@@ -901,9 +919,10 @@ def save_report(text: str, path: Path):
 
 
 # %% [markdown]
-# ## CLI
+# ## Salida y ejecución
 
 # %%
+# cli-only
 def positive_float(value: str) -> float:
     x = float(value)
     if not (math.isfinite(x) and x > 0):
@@ -911,6 +930,7 @@ def positive_float(value: str) -> float:
     return x
 
 
+# cli-only
 def parse_args(argv=None):
     p = argparse.ArgumentParser(prog="devils-advocate", description="Devil's advocate agent (Claude + Grok)")
     source = p.add_mutually_exclusive_group()
@@ -931,6 +951,7 @@ def fail(message: str, code: int = 2):
     sys.exit(code)
 
 
+# cli-only
 def read_idea(args) -> str:
     if args.file:
         try:
@@ -1031,7 +1052,7 @@ def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms
         unpriced = [m for m in dict.fromkeys(models.values()) if session.price(m) is None]
         if unpriced and verbosity >= 2:
             console.print(Text(f"Warning: no price in config.toml for {', '.join(unpriced)}: its cost is not counted and "
-                               "--budget cannot cover it (token counts only). See --configure.", style="yellow"))
+                               "--budget cannot cover it (token counts only). Add prices to config.toml (see the README).", style="yellow"))
         elif unpriced:  # short form: the budget silently not applying would be a surprise
             console.print(Text("Warning: some models have no price in config.toml, so --budget cannot cover them (-vv for details).",
                                style="yellow"))
@@ -1092,6 +1113,7 @@ def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms
     return result
 
 
+# cli-only
 CONFIG_TEMPLATE = """# devils-advocate configuration (this file is private: keep it out of git)
 
 [models]
@@ -1113,6 +1135,7 @@ def shown_path(path: Path) -> str:
     return str(path).replace(str(Path.home()), "~", 1)  # no home path (user name) in the output
 
 
+# cli-only
 def configure():
     """Store API keys in the keychain (asked with getpass, never echoed) and create a config template."""
     for provider, (service, env_var) in API_KEYS.items():
@@ -1139,54 +1162,73 @@ def configure():
     console.print(f"Config template created: {escape(shown_path(path))}. Add your prices there.", soft_wrap=True)
 
 
+def run_with_config(idea: str, rounds: int, budget: float, dry_run: bool, local: bool = False, verbosity: int = 0):
+    try:
+        cfg = load_config()
+    except ValueError as e:
+        fail(str(e))
+    run(idea, rounds, budget, dry_run, local, cfg.get("mask", {}).get("terms", []), cfg.get("models", {}),
+        cfg.get("prices", {}), verbosity)
+
+
+def colab_secret(name: str) -> str | None:
+    """A key from Google Colab's Secrets panel, if running in Colab and the notebook was given access."""
+    if "google.colab" not in sys.modules:
+        return None
+    try:
+        from google.colab import userdata
+        return userdata.get(name) or None
+    except Exception:  # secret missing or access not granted: fall back to getpass
+        return None
+
+
 def notebook_run(idea: str, rounds: int = 1, budget: float = 0.10, dry_run: bool = True, verbosity: int = 2):
-    """Run from a notebook: same flow as the CLI, arguments from variables, keys asked for if missing."""
+    """Run from a notebook: the CLI flow without argparse, arguments from variables, keys asked for if missing."""
     if not dry_run:
         for provider, (service, env_var) in API_KEYS.items():
             if not get_api_key(provider):
-                os.environ[env_var] = getpass.getpass(f"{provider} API key (not stored, not shown): ").strip()
-    argv = ["--rounds", str(rounds), "--budget", str(budget), *(["--dry-run"] if dry_run else []),
-            *(["-" + "v" * verbosity] if verbosity else []), "--", idea]
+                key = colab_secret(env_var) or getpass.getpass(f"{provider} API key (not stored, not shown): ")
+                os.environ[env_var] = key.strip()
     try:
-        main(argv)
+        if not isinstance(idea, str) or not idea.strip():
+            fail("IDEA must be non-empty text.")
+        if rounds not in (1, 2, 3) or not isinstance(budget, (int, float)) or not (math.isfinite(budget) and budget > 0):
+            fail("ROUNDS must be 1, 2 or 3, and BUDGET a number greater than 0.")
+        run_with_config(idea, rounds, budget, dry_run, verbosity=verbosity)
     except SystemExit as e:
         if e.code:
             console.print(f"[red]Stopped (exit code {e.code}).[/red]")
 
 
+# Everything marked `# cli-only` is left out of the notebook by tools/build_notebook.py.
+# cli-only
 def main(argv=None):
     args = parse_args(argv)
     if args.configure:
         configure()
         return
-    idea = read_idea(args)
-    try:
-        cfg = load_config()
-    except ValueError as e:
-        fail(str(e))
-    terms = cfg.get("mask", {}).get("terms", [])
-    run(idea, args.rounds, args.budget, args.dry_run, args.local, terms, cfg.get("models", {}), cfg.get("prices", {}),
-        args.verbose)
+    run_with_config(read_idea(args), args.rounds, args.budget, args.dry_run, args.local, args.verbose)
 
 
 # %% [markdown]
-# ## Run
-# Edit the variables and run all cells. `DRY_RUN = False` makes real API calls (a few cents at most with
-# `ROUNDS = 1`; see the cost table at the end of the output).
+# ## Ejecutar
+# Edita las variables y ejecuta todas las celdas. `DRY_RUN = False` hace llamadas reales a las APIs (unos pocos
+# centavos como máximo con `ROUNDS = 1`; mira la tabla de costos al final de la salida). La salida del agente
+# está en inglés y muestra todo el detalle (equivale a `-vv` en la línea de comandos).
 #
-# Notes: a key typed here lives only in this kernel; if it was wrong, restart the kernel to be asked again.
-# Without prices in `~/.config/devils-advocate/config.toml` the budget cannot be enforced, and only the
-# `max_tokens` caps limit the cost.
+# Notas: una clave escrita aquí solo vive en este kernel; si era incorrecta, reinicia el kernel para que la
+# vuelva a pedir. Sin precios en `~/.config/devils-advocate/config.toml` el presupuesto no se puede aplicar, y
+# solo los límites `max_tokens` acotan el costo.
 
 # %%
-IDEA = "Move our whole database to a single large server to save money"
+IDEA = "Mover toda nuestra base de datos a un único servidor grande para ahorrar dinero"
 ROUNDS = 1
 BUDGET = 0.10
 DRY_RUN = True
 
 # %%
-if __name__ == "__main__":
-    if "ipykernel" in sys.modules:
-        notebook_run(IDEA, ROUNDS, BUDGET, DRY_RUN)
-    else:
-        main()
+if __name__ == "__main__" and "ipykernel" in sys.modules:
+    notebook_run(IDEA, ROUNDS, BUDGET, DRY_RUN)
+# cli-only
+if __name__ == "__main__" and "ipykernel" not in sys.modules:
+    main()

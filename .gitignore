@@ -8,6 +8,8 @@ history/
 CLAUDE.md
 SPEC.md
 reviews/
+# personal delivery copy of the notebook (tools/build_notebook.py --problem)
+entrega/
 
 # python / OS
 .venv/
