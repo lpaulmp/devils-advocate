@@ -33,7 +33,7 @@ def test_request_respects_spec():
     da.call_critic(client, da.Session(max_calls=5), "idea with [IP]", model="claude-haiku-5-5")
     request = client.requests[0]
     assert request["model"] == "claude-haiku-5-5"
-    assert request["max_tokens"] == 600
+    assert request["max_tokens"] == 1000
     assert request["messages"] == [{"role": "user", "content": "<idea>\nidea with [IP]\n</idea>"}]
     assert request["output_config"]["format"]["type"] == "json_schema"
     assert "Severity" in request["system"] and "Probability" in request["system"]
@@ -70,9 +70,10 @@ def test_refusal_is_not_retried():
 def test_retry_respects_call_cap():
     # Cap 2 with the Judge's call reserved: the first attempt fits, the retry does not.
     client, session = FakeClient(response("nope"), response(VALID)), da.Session(max_calls=2)
-    with pytest.raises(da.CallLimitReached):
+    with pytest.raises(da.RoleError) as failure:
         da.call_critic(client, session, "an idea")
     assert len(client.requests) == 1
+    assert "validation error" in str(failure.value) and "no retry: call cap reached" in str(failure.value)
 
 
 def test_key_from_keychain_before_env(monkeypatch):
@@ -173,7 +174,7 @@ def test_real_sdk_accepts_the_request():
     critic = da.call_critic(client, session, "an idea")
     assert len(critic.objections) == 2
     assert session.usage["critic"] == {"input_tokens": 321, "output_tokens": 45}
-    assert seen["body"]["max_tokens"] == 600
+    assert seen["body"]["max_tokens"] == 1000
     assert seen["body"]["thinking"] == {"type": "disabled"}
 
 

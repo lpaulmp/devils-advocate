@@ -4,4 +4,8 @@ keyring>=25
 pydantic>=2.7
 rich>=13
 pytest>=8
+jupytext>=1.19  # notebook: build (tools/build_notebook.py)
+nbformat>=5.10
+nbclient>=0.10  # notebook: run it top to bottom
+ipykernel>=7
 httpx2  # used by the tests' mock transport; installed with anthropic and openai
