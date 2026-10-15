@@ -81,6 +81,19 @@ def test_markdown_explains_what_the_spec_asks(notebook):
         assert needle in text, needle
 
 
+def test_prompts_are_translated_for_the_reader(notebook):
+    text = markdown(notebook)
+    for needle in ("Eres un abogado del diablo", "Auditas una crítica", "Eres el juez", "**Severidad**"):
+        assert needle in text, needle
+    # Each translation has as many rules as its prompt, so a new rule cannot go untranslated unnoticed.
+    cells = {c.source.splitlines()[0]: c.source for c in notebook.cells if c.cell_type == "markdown"}
+    for heading, prompt in (("## Crítico (Claude)", da.CRITIC_SYSTEM), ("## Auditor (Grok)", da.AUDITOR_SYSTEM),
+                            ("## Juez (Claude)", da.JUDGE_SYSTEM)):
+        rules = sum(line.startswith("- ") for line in prompt.splitlines())
+        translated = sum(line.startswith("> - ") for line in cells[heading].splitlines())
+        assert rules == translated, heading
+
+
 def test_variables_cell_replaces_argparse(notebook):
     sources = [c.source for c in code_cells(notebook)]
     variables = next(s for s in sources if s.startswith("IDEA ="))
