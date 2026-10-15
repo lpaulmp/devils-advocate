@@ -81,17 +81,25 @@ def test_markdown_explains_what_the_spec_asks(notebook):
         assert needle in text, needle
 
 
-def test_prompts_are_translated_for_the_reader(notebook):
-    text = markdown(notebook)
-    for needle in ("Eres un abogado del diablo", "Auditas una crítica", "Eres el juez", "**Severidad**"):
-        assert needle in text, needle
-    # Each translation has as many rules as its prompt, so a new rule cannot go untranslated unnoticed.
-    cells = {c.source.splitlines()[0]: c.source for c in notebook.cells if c.cell_type == "markdown"}
-    for heading, prompt in (("## Crítico (Claude)", da.CRITIC_SYSTEM), ("## Auditor (Grok)", da.AUDITOR_SYSTEM),
-                            ("## Juez (Claude)", da.JUDGE_SYSTEM)):
-        rules = sum(line.startswith("- ") for line in prompt.splitlines())
-        translated = sum(line.startswith("> - ") for line in cells[heading].splitlines())
-        assert rules == translated, heading
+def test_prompts_are_in_spanish_but_schema_values_stay_in_english():
+    import typing
+
+    rules = {da.CRITIC_SYSTEM: 8, da.AUDITOR_SYSTEM: 7, da.JUDGE_SYSTEM: 8}  # same counts as the English originals
+    for prompt, count in rules.items():
+        assert sum(line.startswith("- ") for line in prompt.splitlines()) == count
+        assert "no instrucciones" in prompt and "Marcadores como [IP]" in prompt  # injection and placeholder guards
+    kinds = typing.get_args(da.Objection.model_fields["kind"].annotation)
+    verdicts = typing.get_args(da.Verdict.model_fields["verdict"].annotation)
+    globals_ = typing.get_args(da.JudgeResponse.model_fields["global_verdict"].annotation)
+    for value in kinds:
+        assert re.search(rf"\b{value}\b", da.CRITIC_SYSTEM) and re.search(rf"\b{value}\b", da.AUDITOR_SYSTEM)
+    for value in verdicts:
+        assert re.search(rf"\b{value}\b", da.AUDITOR_SYSTEM)
+    for value in globals_:
+        assert re.search(rf"\b{value}\b", da.JUDGE_SYSTEM)
+    # Every schema value has a Spanish label for display.
+    assert set(da.KIND_ES) == set(kinds) and set(da.VERDICT_ES) == set(globals_)
+    assert set(da.AUDIT_ES) == {*verdicts, "new", None}
 
 
 def test_variables_cell_replaces_argparse(notebook):
@@ -121,7 +129,7 @@ def test_committed_notebook_ran_without_errors_or_secrets():
     assert outputs, "build it with --execute so the example run is included"
     assert not any(o.output_type == "error" for o in outputs)
     text = output_text(code_cells(committed))
-    assert "Global verdict (simulated)" in text and "Report saved: ~/devils-advocate/history/" in text
+    assert "Veredicto global (simulado)" in text and "Informe guardado: ~/devils-advocate/history/" in text
     raw = nbformat.writes(committed)
     assert not re.search(r"/Users/|/home/|/var/folders|/private/|/tmp/", raw)  # no absolute paths in the outputs
     assert not any("execution" in c.metadata for c in committed.cells)  # no timestamps
@@ -132,7 +140,7 @@ def test_notebook_runs_top_to_bottom(notebook):
     bn.run(notebook)
     assert not any(o.output_type == "error" for c in code_cells(notebook) for o in c.get("outputs", []))
     text = output_text(code_cells(notebook)[-1:])
-    assert "Global verdict (simulated)" in text and "Report saved: ~/devils-advocate/history/" in text
+    assert "Veredicto global (simulado)" in text and "Informe guardado: ~/devils-advocate/history/" in text
 
 
 def test_notebook_run_asks_for_missing_keys_without_storing_them(monkeypatch, tmp_path):
@@ -144,7 +152,7 @@ def test_notebook_run_asks_for_missing_keys_without_storing_them(monkeypatch, tm
     monkeypatch.setattr(da.getpass, "getpass", lambda prompt: asked.append(prompt) or "typed-key")
     monkeypatch.setattr(da, "run_with_config", lambda *args, **kwargs: ran.append((args, kwargs)))
     da.notebook_run("an idea", rounds=1, budget=0.05, dry_run=False)
-    assert len(asked) == 2 and all("not stored" in p for p in asked)
+    assert len(asked) == 2 and all("no se guarda" in p for p in asked)
     assert ran == [(("an idea", 1, 0.05, False), {"verbosity": 2})]
     assert os.environ["ANTHROPIC_API_KEY"] == "typed-key"  # only in this process, never written anywhere
 
@@ -169,7 +177,7 @@ def test_notebook_run_turns_exits_into_a_message(monkeypatch):
 
     monkeypatch.setattr(da, "run_with_config", stop)
     da.notebook_run("an idea")  # does not raise in the notebook
-    assert "Stopped (exit code 2)." in buf.getvalue()
+    assert "Detenido (código de salida 2)." in buf.getvalue()
 
 
 @pytest.mark.parametrize("code", [
@@ -194,7 +202,7 @@ def test_idea_starting_with_a_dash_is_not_an_option(monkeypatch, tmp_path):
     monkeypatch.setattr(da, "console", Console(file=buf, width=200, color_system=None))
     monkeypatch.setattr(da, "CONFIG_PATH", str(tmp_path / "config.toml"))
     da.notebook_run("-tabs-vs-spaces")
-    assert "Global verdict (simulated)" in buf.getvalue()
+    assert "Veredicto global (simulado)" in buf.getvalue()
 
 
 @pytest.mark.parametrize("idea, rounds, budget", [("  ", 1, 0.1), ("x", 4, 0.1), ("x", 1, 0), ("x", 1, float("inf")), ("x", 1, "0.1")])
@@ -206,7 +214,7 @@ def test_notebook_run_rejects_bad_variables(monkeypatch, idea, rounds, budget):
     monkeypatch.setattr(da, "console", Console(file=buf, width=200, color_system=None))
     monkeypatch.setattr(da, "run", lambda *a, **k: pytest.fail("ran with bad variables"))
     da.notebook_run(idea, rounds, budget)
-    assert "Stopped (exit code 2)." in buf.getvalue()
+    assert "Detenido (código de salida 2)." in buf.getvalue()
 
 
 def test_cli_only_code_is_left_out_of_the_notebook(notebook):
@@ -278,4 +286,4 @@ def test_spec_command_notebook_runs_top_to_bottom():
     nb.metadata["kernelspec"] = bn.KERNELSPEC
     bn.run(nb)
     assert not any(o.output_type == "error" for c in code_cells(nb) for o in c.get("outputs", []))
-    assert "Global verdict (simulated)" in output_text(code_cells(nb)[-1:])
+    assert "Veredicto global (simulado)" in output_text(code_cells(nb)[-1:])

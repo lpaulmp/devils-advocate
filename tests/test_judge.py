@@ -71,7 +71,7 @@ def test_invalid_answer_is_retried_once(bad):
 def test_refusal_is_not_retried():
     claude = FakeClaude()
     claude.judge.queue = [judge_response("", stop_reason="refusal")]
-    with pytest.raises(da.RoleError, match="declined"):
+    with pytest.raises(da.RoleError, match="rechazó"):
         da.call_judge(claude, da.Session(max_calls=5), "idea", *entries())
     assert len(claude.judge.requests) == 1
 
@@ -84,7 +84,7 @@ def test_judge_uses_the_reserved_call_but_no_more():
         da.call_judge(claude, session, "idea", *entries())
     assert len(claude.judge.requests) == 1 and session.calls == 3
     # The message gives the first attempt's cause, not only the cap that blocked the retry.
-    assert "stop_reason=max_tokens" in str(failure.value) and "no retry: call cap reached" in str(failure.value)
+    assert "stop_reason=max_tokens" in str(failure.value) and "sin reintento: se alcanzó el límite de llamadas" in str(failure.value)
 
 
 def test_budget_blocking_the_retry_keeps_the_first_cause(monkeypatch):
@@ -97,7 +97,7 @@ def test_budget_blocking_the_retry_keeps_the_first_cause(monkeypatch):
     with pytest.raises(da.RoleError) as failure:
         da.call_judge(claude, session, "idea", [], [])
     assert len(claude.judge.requests) == 1
-    assert "stop_reason=max_tokens" in str(failure.value) and "no retry: budget would be exceeded" in str(failure.value)
+    assert "stop_reason=max_tokens" in str(failure.value) and "sin reintento: se superaría el presupuesto" in str(failure.value)
 
 
 def test_judge_without_any_call_left_reports_the_cap():
@@ -205,21 +205,21 @@ def test_build_report_sections_and_one_line_fields():
     session.record("judge", 10, 5, "unpriced-model")
     session.unpriced.add("unpriced-model")
     r = da.RunResult("masked idea", 2, "live", {"critic": "c", "auditor": "a", "judge": "claude-sonnet-5-5"}, 2,
-                     ledger, beam, ["Converged in round 2."], session, judge, "claude-sonnet-5")
+                     ledger, beam, ["Convergió en la ronda 2."], session, judge, "claude-sonnet-5")
     text = da.build_report(r, datetime(2026, 10, 12, 21, 30))
-    for section in ("## Idea (masked)", "## Verdict: ADJUST", "## Consensus", "## Disagreements", "## Steelman",
-                    "## Open questions", "## Objections", "## Notes", "## Usage and cost"):
+    for section in ("## Idea (enmascarada)", "## Veredicto: AJUSTAR", "## Consenso", "## Desacuerdos", "## Steelman",
+                    "## Preguntas abiertas", "## Objeciones", "## Notas", "## Uso y costo"):
         assert section in text
     assert "> masked idea" in text
-    assert "- ★ **O1** (round 1, premise, 4×3=12, valid) Line one line two — *Holds.*" in text
-    assert "- **O2** (round 1, cost, 3×2=6, incorrect)" in text
+    assert "- ★ **O1** (ronda 1, premisa, 4×3=12, válida) Line one line two — *Holds.*" in text
+    assert "- **O2** (ronda 1, costo, 3×2=6, incorrecta)" in text
     assert "Strong case" in text
-    assert "*Served by fallback model `claude-sonnet-5`.*" in text
-    assert "calls: 4/5" in text
-    assert "| judge | `claude-sonnet-5-5` | 1000 | 500 | $0.0070 |" in text
-    assert "| judge | `unpriced-model` | 10 | 5 | — |" in text
-    assert "**$0.0070** of $0.10" in text
-    assert "No price in config.toml for: `unpriced-model`" in text
+    assert "*Respondió el modelo de respaldo `claude-sonnet-5`.*" in text
+    assert "llamadas: 4/5" in text
+    assert "| juez | `claude-sonnet-5-5` | 1000 | 500 | $0.0070 |" in text
+    assert "| juez | `unpriced-model` | 10 | 5 | — |" in text
+    assert "**$0.0070** de $0.10" in text
+    assert "Sin precio en config.toml para: `unpriced-model`" in text
 
 
 # --- live runs ---------------------------------------------------------------------------------------
@@ -250,12 +250,12 @@ def test_live_run_prints_and_saves_the_report(live, isolated_history):
     secret = "AKIA" + "ABCDEFGHIJKLMNOP"
     da.main(["-vv", f"Keep {secret} in git"])
     out = live.out.getvalue()
-    assert "Global verdict:" in out and "Cheap to try and easy to undo." in out
+    assert "Veredicto global:" in out and "Cheap to try and easy to undo." in out
     [report] = saved_reports(isolated_history)
     text = report.read_text(encoding="utf-8")
     assert secret not in text and "[AWS_KEY]" in text and FAKE_KEY not in text
-    assert "## Verdict: ADJUST" in text and "Nobody asked for it." in text
-    assert "Report saved: " in out and str(report.name) in out
+    assert "## Veredicto: AJUSTAR" in text and "Nobody asked for it." in text
+    assert "Informe guardado: " in out and str(report.name) in out
     judge_input = live.claude.judge.requests[0]["messages"][0]["content"]
     assert secret not in judge_input
 
@@ -264,26 +264,26 @@ def test_judge_failure_still_saves_a_report(live, isolated_history):
     live.claude.judge.queue = [judge_response("", stop_reason="refusal")]
     da.main(["-vv", "an idea"])
     out = live.out.getvalue()
-    assert "Judge failed (the Judge model declined the request)" in out
+    assert "Falló el Juez (el modelo del Juez rechazó la petición)" in out
     [report] = saved_reports(isolated_history)
     text = report.read_text(encoding="utf-8")
-    assert "## Verdict" not in text and "Judge failed" in text and "Nobody asked for it." in text
+    assert "## Veredicto" not in text and "Falló el Juez" in text and "Nobody asked for it." in text
 
 
 def test_judge_failure_shows_by_default_with_the_key_objections(live, isolated_history):
     live.claude.judge.queue = [judge_response("", stop_reason="refusal")]
     da.main(["an idea"])
     out = live.out.getvalue()
-    assert "Judge failed (the Judge model declined the request)" in out
-    assert "Key objections\n  1. Nobody asked for it." in out and "Verdict" not in out
+    assert "Falló el Juez (el modelo del Juez rechazó la petición)" in out
+    assert "Objeciones clave\n  1. Nobody asked for it." in out and "Veredicto" not in out
 
 
 def test_fallback_model_is_reported(live, isolated_history):
     live.claude.judge.queue = [judge_response(fallback="claude-sonnet-5")]
     da.main(["-vv", "an idea"])
-    assert "Judge served by fallback model claude-sonnet-5." in live.out.getvalue()
+    assert "Respondió el modelo de respaldo del Juez: claude-sonnet-5." in live.out.getvalue()
     [report] = saved_reports(isolated_history)
-    assert "*Served by fallback model `claude-sonnet-5`.*" in report.read_text(encoding="utf-8")
+    assert "*Respondió el modelo de respaldo `claude-sonnet-5`.*" in report.read_text(encoding="utf-8")
 
 
 def test_dated_model_id_is_not_reported_as_fallback(live, isolated_history):
@@ -301,7 +301,7 @@ def test_unreadable_history_folder_is_a_warning(live, isolated_history):
         da.main(["-vv", "an idea"])
     finally:
         isolated_history.chmod(0o700)
-    assert "Could not save the report" in live.out.getvalue()
+    assert "No se pudo guardar el informe" in live.out.getvalue()
 
 
 def test_control_characters_and_markdown_are_neutralized(live, isolated_history):
@@ -330,9 +330,9 @@ def test_one_v_adds_objections_and_synthesis_but_not_costs(live, isolated_histor
     (tmp_path / "config.toml").write_text('[prices]\n"claude-haiku-5-5" = { input = 1, output = 1 }\n', encoding="utf-8")
     da.main(["-v", "--rounds", "1", "an idea"])
     out = live.out.getvalue()
-    assert "Objections · Critic" in out and "Beam (top 3)" in out and "Steelman" in out
-    assert "some models have no price" in out  # short warning; the model list is -vv detail
-    for detail in ("Masking", "max calls", "Usage and cost", "calls:", "its cost is not counted"):
+    assert "Objeciones · Crítico" in out and "Beam (mejores 3)" in out and "Steelman" in out
+    assert "algunos modelos no tienen precio" in out  # short warning; the model list is -vv detail
+    for detail in ("Enmascarado", "máx. llamadas", "Uso y costo", "llamadas:", "su costo no se cuenta"):
         assert detail not in out
 
 
@@ -340,7 +340,7 @@ def test_empty_ledger_skips_the_judge(live, isolated_history):
     live.claude.queue = [critic_response({"objections": []})]
     da.main(["-vv", "an idea"])
     assert live.claude.judge.requests == []
-    assert "Judge was not called" in live.out.getvalue()
+    assert "no se llamó al Juez" in live.out.getvalue()
 
 
 def test_judge_model_from_config(live, isolated_history, tmp_path):
@@ -354,13 +354,13 @@ def test_save_failure_is_a_warning_not_a_crash(live, isolated_history):
     isolated_history.parent.mkdir(parents=True, exist_ok=True)
     isolated_history.write_text("a file where the folder should be", encoding="utf-8")
     da.main(["-vv", "an idea"])
-    assert "Could not save the report" in live.out.getvalue()
+    assert "No se pudo guardar el informe" in live.out.getvalue()
 
 
 def test_report_location_hides_the_home_folder(live, monkeypatch, tmp_path):
     monkeypatch.setattr(da.Path, "home", classmethod(lambda cls: tmp_path))
     da.main(["-vv", "an idea"])
-    assert str(tmp_path) not in live.out.getvalue().split("Report saved:")[1]
+    assert str(tmp_path) not in live.out.getvalue().split("Informe guardado:")[1]
 
 
 def test_dry_run_saves_a_simulated_report(monkeypatch, isolated_history, tmp_path):
@@ -370,8 +370,8 @@ def test_dry_run_saves_a_simulated_report(monkeypatch, isolated_history, tmp_pat
     da.main(["-vv", "--dry-run", "x"])
     [report] = saved_reports(isolated_history)
     text = report.read_text(encoding="utf-8")
-    assert text.startswith("# Devil's advocate report (simulated)") and "- Models: simulated" in text
-    assert "Global verdict (simulated):" in buf.getvalue()
+    assert text.startswith("# Informe del abogado del diablo (simulado)") and "- Modelos: simulados" in text
+    assert "Veredicto global (simulado):" in buf.getvalue()
 
 
 def test_bidi_and_zero_width_characters_are_removed(live, isolated_history):
