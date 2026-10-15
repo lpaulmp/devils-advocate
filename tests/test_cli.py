@@ -33,12 +33,12 @@ def out(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("extra", [[], ["--local"], ["--rounds", "1"], ["--rounds", "3"]])
 def test_dry_run_without_keys_or_network(out, extra):
-    da.main(["--dry-run", *extra, "an idea"])
+    da.main(["-vv", "--dry-run", *extra, "an idea"])
     assert "Global verdict" in out.getvalue()
 
 
 def test_dry_run_reports_call_cap(out):
-    da.main(["--dry-run", "--rounds", "3", "x"])
+    da.main(["-vv", "--dry-run", "--rounds", "3", "x"])
     assert "max calls=7" in out.getvalue()
 
 
@@ -48,39 +48,41 @@ def test_only_masked_text_reaches_roles(out, monkeypatch, tmp_path):
     original = da.simulate_critic
     monkeypatch.setattr(da, "simulate_critic", lambda idea, focus=(): seen.append(idea) or original(idea, focus))
 
-    da.main(["--dry-run", f"Falcon uses {FAKE_KEY} on 10.0.0.1"])
+    da.main(["-vv", "--dry-run", f"Falcon uses {FAKE_KEY} on 10.0.0.1"])
     assert seen and all(idea == "[TERM] uses [AWS_KEY] on [IP]" for idea in seen)
     assert "Masking: 3 replacement(s)" in out.getvalue()
 
 
-def test_no_output_contains_a_secret(out):
-    da.main(["--dry-run", f"keys {FAKE_KEY} {FAKE_TOKEN} mail a@example.com"])
+@pytest.mark.parametrize("level", [[], ["-v"], ["-vv"]])
+def test_no_output_contains_a_secret(out, level):
+    da.main([*level, "--dry-run", f"keys {FAKE_KEY} {FAKE_TOKEN} mail a@example.com"])
     text = out.getvalue()
     for secret in (FAKE_KEY, FAKE_TOKEN, "a@example.com"):
         assert secret not in text
 
 
-def test_model_text_is_not_parsed_as_markup(out, monkeypatch):
+@pytest.mark.parametrize("level", [[], ["-v"], ["-vv"]])
+def test_model_text_is_not_parsed_as_markup(out, monkeypatch, level):
     def critic(idea, focus=()):
         return da.CriticResponse(objections=[
             da.Objection(id="O1", kind="premise", text="[simulated] a [/b] b :smile:", severity=1, probability=1),
         ])
 
     monkeypatch.setattr(da, "simulate_critic", critic)
-    da.main(["--dry-run", "x"])
+    da.main([*level, "--dry-run", "x"])
     assert "[simulated] a [/b] b :smile:" in out.getvalue()
 
 
 def test_live_run_without_key_exits_cleanly(out):
     with pytest.raises(SystemExit) as e:
-        da.main(["an idea"])
+        da.main(["-vv", "an idea"])
     assert e.value.code == 2
     assert "no Anthropic API key" in out.getvalue()
 
 
 def test_local_live_run_not_implemented(out):
     with pytest.raises(SystemExit) as e:
-        da.main(["--local", "an idea"])
+        da.main(["-vv", "--local", "an idea"])
     assert e.value.code == 2
 
 
@@ -102,19 +104,19 @@ def test_invalid_arguments_rejected(argv, capsys):
 def test_missing_idea_exits_cleanly(out, tmp_path, monkeypatch, argv):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit) as e:
-        da.main(["--dry-run", *argv])
+        da.main(["-vv", "--dry-run", *argv])
     assert e.value.code == 2
 
 
 def test_idea_from_file(out, tmp_path):
     idea = tmp_path / "idea.md"
     idea.write_text("an idea from a file", encoding="utf-8")
-    da.main(["--dry-run", "-f", str(idea)])
+    da.main(["-vv", "--dry-run", "-f", str(idea)])
     assert "Global verdict" in out.getvalue()
 
 
 def test_invalid_config_aborts(out, tmp_path):
     (tmp_path / "config.toml").write_text("[mask\n", encoding="utf-8")
     with pytest.raises(SystemExit) as e:
-        da.main(["--dry-run", "x"])
+        da.main(["-vv", "--dry-run", "x"])
     assert e.value.code == 2

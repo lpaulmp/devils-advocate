@@ -119,7 +119,7 @@ def live(monkeypatch, tmp_path):
 
 def test_budget_stops_the_rounds_but_keeps_the_judge(live, isolated_history):
     (live.tmp / "config.toml").write_text(prices_toml(PRICES), encoding="utf-8")
-    da.main(["--budget", "1.32", "an idea"])
+    da.main(["-vv", "--budget", "1.32", "an idea"])
     out = live.out.getvalue()
     assert len(live.claude.requests) == 1 and len(live.grok.requests) == 1  # round 2's Critic would exceed
     assert "Round 2: Critic failed (budget would be exceeded" in out
@@ -131,10 +131,23 @@ def test_budget_stops_the_rounds_but_keeps_the_judge(live, isolated_history):
     assert "| **total** | | | | **$0.0770** of $1.32 |" in text
 
 
+def test_budget_stop_and_missing_prices_show_by_default(live, isolated_history):
+    (live.tmp / "config.toml").write_text(prices_toml(PRICES), encoding="utf-8")
+    da.main(["--budget", "1.32", "an idea"])
+    out = live.out.getvalue()
+    assert "Round 2: Critic failed (budget would be exceeded" in out and "Usage and cost" not in out
+
+
+def test_missing_prices_get_a_short_warning_by_default(live, isolated_history):
+    da.main(["an idea"])
+    out = live.out.getvalue()
+    assert "Warning: some models have no price in config.toml, so --budget cannot cover them" in out
+
+
 def test_budget_too_small_for_anything_exits_cleanly(live, isolated_history):
     (live.tmp / "config.toml").write_text(prices_toml(PRICES), encoding="utf-8")
     with pytest.raises(SystemExit) as e:
-        da.main(["--budget", "0.5", "an idea"])
+        da.main(["-vv", "--budget", "0.5", "an idea"])
     assert e.value.code == 2
     assert "Critic failed: budget would be exceeded" in live.out.getvalue()
     assert live.claude.requests == []
@@ -142,7 +155,7 @@ def test_budget_too_small_for_anything_exits_cleanly(live, isolated_history):
 
 def test_cost_table_per_role_and_model(live):
     (live.tmp / "config.toml").write_text(prices_toml(PRICES), encoding="utf-8")
-    da.main(["--budget", "5", "an idea"])
+    da.main(["-vv", "--budget", "5", "an idea"])
     out = live.out.getvalue()
     assert "Usage and cost" in out
     assert re.search(r"critic\W+claude-haiku-5-5\W+200\W+100\W+\$0\.0300", out)  # two Critic calls
@@ -154,14 +167,14 @@ def test_fallback_usage_is_recorded_per_model(live, isolated_history):
     prices = {**PRICES, "claude-sonnet-5": {"input": 50.0, "output": 50.0}}
     (live.tmp / "config.toml").write_text(prices_toml(prices), encoding="utf-8")
     live.claude.judge.queue = [judge_response(fallback="claude-sonnet-5")]
-    da.main(["--budget", "5", "an idea"])
+    da.main(["-vv", "--budget", "5", "an idea"])
     out = live.out.getvalue()
     assert re.search(r"judge\W+claude-sonnet-5-5\W+300\W+200\W+\$0\.0500", out)
     assert re.search(r"judge\W+claude-sonnet-5\W+300\W+200\W+\$0\.0250", out)
 
 
 def test_missing_prices_warn_and_do_not_block(live, isolated_history):
-    da.main(["--budget", "0.0001", "an idea"])
+    da.main(["-vv", "--budget", "0.0001", "an idea"])
     out = live.out.getvalue()
     assert "no price in config.toml for claude-haiku-5-5, grok-4.20-0309-non-reasoning, claude-sonnet-5-5" in out
     assert len(live.claude.judge.requests) == 1
@@ -227,7 +240,7 @@ def test_each_role_checks_the_budget_with_its_own_model_and_estimate(live, monke
         return real(self, reserve, model, input_tokens, max_output, attempts)
 
     monkeypatch.setattr(da.Session, "start_call", spy)
-    da.main(["--rounds", "1", "an idea"])
+    da.main(["-vv", "--rounds", "1", "an idea"])
     critic, auditor, judge = calls
     assert (critic["model"], critic["max_output"], critic["reserve"]) == ("claude-haiku-5-5", 1000, 1)
     assert (auditor["model"], auditor["max_output"], auditor["reserve"]) == ("grok-4.20-0309-non-reasoning", 1000, 1)
@@ -244,7 +257,7 @@ def test_each_role_checks_the_budget_with_its_own_model_and_estimate(live, monke
 def test_budget_can_block_the_auditor(live, isolated_history):
     # Critic: 0 + 0.20 + 1.10 kept ≤ 1.31; Auditor: 0.015 + 0.20 + 1.10 = 1.315 > 1.31.
     (live.tmp / "config.toml").write_text(prices_toml(PRICES), encoding="utf-8")
-    da.main(["--budget", "1.31", "--rounds", "1", "an idea"])
+    da.main(["-vv", "--budget", "1.31", "--rounds", "1", "an idea"])
     out = live.out.getvalue()
     assert live.grok.requests == []
     assert "Round 1: Auditor failed (budget would be exceeded" in out
@@ -254,7 +267,7 @@ def test_budget_can_block_the_auditor(live, isolated_history):
 def test_fallback_to_an_unpriced_model_is_reported(live, isolated_history):
     (live.tmp / "config.toml").write_text(prices_toml(PRICES), encoding="utf-8")
     live.claude.judge.queue = [judge_response(fallback="claude-fable-5-1")]
-    da.main(["--budget", "5", "an idea"])
+    da.main(["-vv", "--budget", "5", "an idea"])
     out = live.out.getvalue()
     assert "No price in config.toml for: claude-fable-5-1" in out
     text = sorted(isolated_history.glob("*.md"))[0].read_text(encoding="utf-8")

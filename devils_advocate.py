@@ -812,9 +812,19 @@ def report_path(idea: str, now: datetime) -> Path:
 CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
 
 
+# Models sometimes write accents as literal \u00f3 escapes inside their JSON strings.
+UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def unescape(match: re.Match) -> str:
+    code = int(match.group(1), 16)
+    return match.group(0) if 0xD800 <= code <= 0xDFFF else chr(code)  # lone surrogates stay as written
+
+
 def clean(text: str) -> str:
-    """Drop control and invisible characters so model text cannot drive the terminal or reorder text."""
-    return CONTROL_CHARS.sub("", text)
+    """Decode literal \\uXXXX escapes, then drop control and invisible characters so model text cannot
+    drive the terminal or reorder text (an escaped control character is dropped too)."""
+    return CONTROL_CHARS.sub("", UNICODE_ESCAPE.sub(unescape, text))
 
 
 def one_line(text: str) -> str:
@@ -840,7 +850,7 @@ def build_report(r: RunResult, now: datetime) -> str:
         "",
         "## Idea (masked)",
         "",
-        *[f"> {clean(line)}" for line in r.idea.strip().splitlines()],
+        *[f"> {CONTROL_CHARS.sub('', line)}" for line in r.idea.strip().splitlines()],  # the user's text: not unescaped
         "",
     ]
     if r.judge:
@@ -911,6 +921,8 @@ def parse_args(argv=None):
     p.add_argument("--dry-run", action="store_true", help="no API calls (simulated responses)")
     p.add_argument("--budget", type=positive_float, default=0.10, help="USD cap for this run (> 0)")
     p.add_argument("--configure", action="store_true", help="store API keys in the keychain")
+    p.add_argument("-v", "--verbose", action="count", default=0,
+                   help="-v: every objection and the full synthesis; -vv: also masking, calls and costs")
     return p.parse_args(argv)
 
 
@@ -963,6 +975,21 @@ def render_judge(judge: JudgeResponse, simulated: bool):
     console.print(Text("  " + one_line(judge.steelman)))
 
 
+def render_summary(judge: JudgeResponse | None, beam: list[Entry], simulated: bool):
+    """Default output: the verdict, the strongest objections and the open questions."""
+    if judge:
+        label = " (simulated)" if simulated else ""
+        console.print(f"[bold]Verdict{label}: {judge.global_verdict.upper()}[/bold]")
+    if beam:
+        console.print("[bold]Key objections[/bold]")
+        for i, e in enumerate(beam, 1):
+            console.print(Text(f"  {i}. {one_line(e.objection.text)} ({e.objection.score})"))
+    if judge and judge.questions:
+        console.print("[bold]Open questions[/bold]")
+        for q in judge.questions:
+            console.print(Text("  • " + one_line(q)))
+
+
 def render_usage(session: Session):
     if session.by_model:
         table = Table(title="Usage and cost")
@@ -978,16 +1005,20 @@ def render_usage(session: Session):
     console.print(f"[dim]calls: {session.calls}/{session.max_calls}[/dim]")
 
 
-def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms=None, models=None, prices=None):
+def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms=None, models=None, prices=None,
+        verbosity: int = 0):
     if local and not dry_run:
         fail("--local real runs are not implemented yet. Use --dry-run.")
     if len(idea) > MAX_IDEA_CHARS:
         fail(f"Idea too long: {len(idea)} characters (max {MAX_IDEA_CHARS}).")
     masked, n = mask(idea, terms)
-    console.print(f"[dim]Masking: {n} replacement(s).[/dim]")
     session = Session(max_calls=2 * rounds + 1, budget=budget, prices=dict(prices or {}))
     mode = "dry-run" if dry_run else "live"
-    console.print(f"[dim]{mode} · rounds={rounds} · max calls={session.max_calls} · budget=${budget:.2f}[/dim]")
+    if verbosity >= 2:
+        console.print(f"[dim]Masking: {n} replacement(s).[/dim]")
+        console.print(f"[dim]{mode} · rounds={rounds} · max calls={session.max_calls} · budget=${budget:.2f}[/dim]")
+    elif n:
+        console.print(f"[dim]Masked {n} sensitive value(s) before sending.[/dim]")
 
     # Only the masked text reaches the roles.
     if dry_run:
@@ -998,9 +1029,12 @@ def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms
     else:
         models = {**DEFAULT_MODELS, **(models or {})}
         unpriced = [m for m in dict.fromkeys(models.values()) if session.price(m) is None]
-        if unpriced:
+        if unpriced and verbosity >= 2:
             console.print(Text(f"Warning: no price in config.toml for {', '.join(unpriced)}: its cost is not counted and "
                                "--budget cannot cover it (token counts only). See --configure.", style="yellow"))
+        elif unpriced:  # short form: the budget silently not applying would be a surprise
+            console.print(Text("Warning: some models have no price in config.toml, so --budget cannot cover them (-vv for details).",
+                               style="yellow"))
         session.judge_reserve = judge_reserve(session, models["judge"], masked)
         try:  # both keys are checked before any call is made
             claude, grok = make_anthropic_client(), make_xai_client()
@@ -1016,11 +1050,13 @@ def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms
     try:
         ledger, beam, note = run_rounds(critic_fn, auditor_fn, masked, rounds)
     except ROLE_ERRORS as e:
-        render_usage(session)
+        if verbosity >= 2:
+            render_usage(session)
         fail(f"Critic failed: {describe_error(e)}")
 
-    title = "Objections (simulated)" if dry_run else f"Objections · Critic ({escape(models['critic'])}) · Auditor ({escape(models['auditor'])})"
-    render_ledger(ledger, beam, title)
+    if verbosity >= 1:
+        title = "Objections (simulated)" if dry_run else f"Objections · Critic ({escape(models['critic'])}) · Auditor ({escape(models['auditor'])})"
+        render_ledger(ledger, beam, title)
     notes = [note] if note else []
     result = RunResult(masked, n, mode, {} if dry_run else {r: models[r] for r in ("critic", "auditor", "judge")},
                        rounds, ledger, beam, notes, session)
@@ -1034,13 +1070,17 @@ def run(idea: str, rounds: int, budget: float, dry_run: bool, local: bool, terms
         except ROLE_ERRORS as e:
             result.notes.append(f"Judge failed ({describe_error(e)}); the report has no synthesis.")
     for line in result.notes:
-        console.print(f"[dim]{escape(line)}[/dim]")
-    if result.judge:
+        if verbosity or not line.startswith("Converged"):  # failures always show; convergence is detail
+            console.print(f"[dim]{escape(line)}[/dim]")
+    if verbosity == 0:
+        render_summary(result.judge, beam, dry_run)
+    elif result.judge:
         render_judge(result.judge, dry_run)
+    if verbosity >= 2:
         if result.judge_model:
             console.print(f"[dim]Judge served by fallback model {escape(result.judge_model)}.[/dim]")
-    if not dry_run:
-        render_usage(session)
+        if not dry_run:
+            render_usage(session)
 
     now = datetime.now()
     try:
@@ -1099,13 +1139,14 @@ def configure():
     console.print(f"Config template created: {escape(shown_path(path))}. Add your prices there.", soft_wrap=True)
 
 
-def notebook_run(idea: str, rounds: int = 1, budget: float = 0.10, dry_run: bool = True):
+def notebook_run(idea: str, rounds: int = 1, budget: float = 0.10, dry_run: bool = True, verbosity: int = 2):
     """Run from a notebook: same flow as the CLI, arguments from variables, keys asked for if missing."""
     if not dry_run:
         for provider, (service, env_var) in API_KEYS.items():
             if not get_api_key(provider):
                 os.environ[env_var] = getpass.getpass(f"{provider} API key (not stored, not shown): ").strip()
-    argv = ["--rounds", str(rounds), "--budget", str(budget), *(["--dry-run"] if dry_run else []), "--", idea]
+    argv = ["--rounds", str(rounds), "--budget", str(budget), *(["--dry-run"] if dry_run else []),
+            *(["-" + "v" * verbosity] if verbosity else []), "--", idea]
     try:
         main(argv)
     except SystemExit as e:
@@ -1124,7 +1165,8 @@ def main(argv=None):
     except ValueError as e:
         fail(str(e))
     terms = cfg.get("mask", {}).get("terms", [])
-    run(idea, args.rounds, args.budget, args.dry_run, args.local, terms, cfg.get("models", {}), cfg.get("prices", {}))
+    run(idea, args.rounds, args.budget, args.dry_run, args.local, terms, cfg.get("models", {}), cfg.get("prices", {}),
+        args.verbose)
 
 
 # %% [markdown]

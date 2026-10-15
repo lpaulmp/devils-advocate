@@ -140,7 +140,7 @@ ROUND = {"objections": [{"id": "O1", "kind": "premise", "text": "Nobody asked fo
 def test_live_rounds_stop_at_rounds_and_reserve_the_judge(live):
     # Every round finds something new, so --rounds stops the run.
     live.claude.queue = [critic_response(ROUND)] * 3
-    da.main(["--rounds", "2", "an idea"])
+    da.main(["-vv", "--rounds", "2", "an idea"])
     out = live.out.getvalue()
     assert len(live.claude.requests) == 2 and len(live.grok.requests) == 2
     assert "calls: 5/5" in out  # the fifth call is the Judge's
@@ -151,7 +151,7 @@ def test_live_rounds_stop_at_rounds_and_reserve_the_judge(live):
 def test_live_rounds_cap_stops_the_run_before_rounds_do(live):
     # A Critic retry in each round: round 2's retry would take the Judge's call, so the cap stops it.
     live.claude.queue = [critic_response("nope"), critic_response(ROUND), critic_response("nope"), critic_response(ROUND)]
-    da.main(["--rounds", "2", "an idea"])
+    da.main(["-vv", "--rounds", "2", "an idea"])
     out = live.out.getvalue()
     assert "calls: 5/5" in out  # 4 for the rounds + the Judge's reserved call
     assert "Round 2: Critic failed (the Critic returned an invalid answer (" in out and "no retry: call cap reached" in out
@@ -163,7 +163,7 @@ def test_auditor_round_two_sees_earlier_edge_cases(live):
     live.claude.queue = [critic_response(ROUND), critic_response(ROUND)]
     edge = {"id": "G1", "kind": "edge_case", "text": "Empty input breaks it", "severity": 3, "probability": 4}
     live.grok.queue = [lambda r: all_valid(r, new=[edge])]
-    da.main(["--rounds", "2", "an idea"])
+    da.main(["-vv", "--rounds", "2", "an idea"])
     second = live.grok.requests[1]["messages"][1]["content"]
     found = second.split("<already_found>")[1]
     assert "Empty input breaks it" in found
@@ -172,7 +172,7 @@ def test_auditor_round_two_sees_earlier_edge_cases(live):
 
 def test_live_rounds_one_round_with_a_critic_retry_still_leaves_the_judge(live):
     live.claude.queue = [critic_response("nope"), critic_response(ROUND)]
-    da.main(["--rounds", "1", "an idea"])
+    da.main(["-vv", "--rounds", "1", "an idea"])
     out = live.out.getvalue()
     assert "calls: 3/3" in out  # Critic + retry + the Judge's reserved call
     assert "Auditor failed (call cap reached" in out  # cap 3 minus the Judge's reserve
@@ -183,7 +183,7 @@ def test_live_rounds_one_round_with_a_critic_retry_still_leaves_the_judge(live):
 def test_live_run_shows_verdicts_reasons_and_new_edge_cases(live):
     live.claude.queue = [critic_response(ROUND)]
     live.grok.queue = [lambda r: all_valid(r, new=[{"id": "G1", "kind": "edge_case", "text": "Empty input [x]", "severity": 2, "probability": 4}])]
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     out = live.out.getvalue()
     assert "↳ Holds." in out and "Empty input [x]" in out and "G1" in out
     assert "Converged in round 2" in out
@@ -193,7 +193,7 @@ def test_live_run_shows_verdicts_reasons_and_new_edge_cases(live):
 def test_auditor_receives_only_masked_text(live):
     live.claude.queue = [critic_response(ROUND)]
     secret = "AKIA" + "ABCDEFGHIJKLMNOP"
-    da.main([f"Keep {secret} in git"])
+    da.main(["-vv", f"Keep {secret} in git"])
     user = live.grok.requests[0]["messages"][1]["content"]
     assert secret not in user and "[AWS_KEY]" in user
 
@@ -203,7 +203,7 @@ def test_missing_xai_key_fails_before_any_call(live, monkeypatch):
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(da, "make_xai_client", REAL_MAKE_XAI_CLIENT)
     with pytest.raises(SystemExit) as e:
-        da.main(["an idea"])
+        da.main(["-vv", "an idea"])
     assert e.value.code == 2
     assert "no xAI API key" in live.out.getvalue()
     assert live.claude.requests == []
@@ -228,18 +228,39 @@ def test_xai_errors_do_not_leak_the_key_or_retry(live, monkeypatch, status):
     monkeypatch.setattr(da.openai, "OpenAI", with_transport)
     monkeypatch.setattr(da, "make_xai_client", REAL_MAKE_XAI_CLIENT)
     live.claude.queue = [critic_response(ROUND)]
-    da.main(["--rounds", "1", "an idea"])
+    da.main(["-vv", "--rounds", "1", "an idea"])
     out = live.out.getvalue()
     assert FAKE_KEY not in out
     assert len(requests) == 1
     assert f"Auditor failed (API error {status}" in out
 
 
+def test_default_output_is_short(monkeypatch, tmp_path):
+    buf = io.StringIO()
+    monkeypatch.setattr(da, "console", Console(file=buf, width=200, color_system=None))
+    monkeypatch.setattr(da, "CONFIG_PATH", str(tmp_path / "config.toml"))
+    da.main(["--dry-run", "x"])
+    out = buf.getvalue()
+    assert "Verdict (simulated): ADJUST" in out
+    assert "Key objections\n  1. [simulated] Assumes users actually want this. (12)" in out
+    assert "Open questions" in out and "Report saved:" in out
+    for detail in ("Masking", "max calls", "Objections (simulated)", "Beam", "Consensus", "Steelman", "Converged"):
+        assert detail not in out
+
+
+def test_masked_values_are_mentioned_by_default(monkeypatch, tmp_path):
+    buf = io.StringIO()
+    monkeypatch.setattr(da, "console", Console(file=buf, width=200, color_system=None))
+    monkeypatch.setattr(da, "CONFIG_PATH", str(tmp_path / "config.toml"))
+    da.main(["--dry-run", "server 10.0.0.1"])
+    assert "Masked 1 sensitive value(s) before sending." in buf.getvalue()
+
+
 def test_dry_run_rounds_converge(monkeypatch, tmp_path):
     buf = io.StringIO()
     monkeypatch.setattr(da, "console", Console(file=buf, width=200, color_system=None))
     monkeypatch.setattr(da, "CONFIG_PATH", str(tmp_path / "config.toml"))
-    da.main(["--dry-run", "--rounds", "3", "x"])
+    da.main(["-vv", "--dry-run", "--rounds", "3", "x"])
     out = buf.getvalue()
     assert "Beam (top 3): O1, O3, G1" in out
     assert "Converged in round 2" in out

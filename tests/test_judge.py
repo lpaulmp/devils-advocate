@@ -248,7 +248,7 @@ def saved_reports(history):
 
 def test_live_run_prints_and_saves_the_report(live, isolated_history):
     secret = "AKIA" + "ABCDEFGHIJKLMNOP"
-    da.main([f"Keep {secret} in git"])
+    da.main(["-vv", f"Keep {secret} in git"])
     out = live.out.getvalue()
     assert "Global verdict:" in out and "Cheap to try and easy to undo." in out
     [report] = saved_reports(isolated_history)
@@ -262,7 +262,7 @@ def test_live_run_prints_and_saves_the_report(live, isolated_history):
 
 def test_judge_failure_still_saves_a_report(live, isolated_history):
     live.claude.judge.queue = [judge_response("", stop_reason="refusal")]
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     out = live.out.getvalue()
     assert "Judge failed (the Judge model declined the request)" in out
     [report] = saved_reports(isolated_history)
@@ -270,9 +270,17 @@ def test_judge_failure_still_saves_a_report(live, isolated_history):
     assert "## Verdict" not in text and "Judge failed" in text and "Nobody asked for it." in text
 
 
+def test_judge_failure_shows_by_default_with_the_key_objections(live, isolated_history):
+    live.claude.judge.queue = [judge_response("", stop_reason="refusal")]
+    da.main(["an idea"])
+    out = live.out.getvalue()
+    assert "Judge failed (the Judge model declined the request)" in out
+    assert "Key objections\n  1. Nobody asked for it." in out and "Verdict" not in out
+
+
 def test_fallback_model_is_reported(live, isolated_history):
     live.claude.judge.queue = [judge_response(fallback="claude-sonnet-5")]
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     assert "Judge served by fallback model claude-sonnet-5." in live.out.getvalue()
     [report] = saved_reports(isolated_history)
     assert "*Served by fallback model `claude-sonnet-5`.*" in report.read_text(encoding="utf-8")
@@ -280,7 +288,7 @@ def test_fallback_model_is_reported(live, isolated_history):
 
 def test_dated_model_id_is_not_reported_as_fallback(live, isolated_history):
     live.claude.judge.queue = [judge_response(model="claude-sonnet-5-5-20261001")]
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     assert "fallback" not in live.out.getvalue()
     [report] = saved_reports(isolated_history)
     assert "fallback" not in report.read_text(encoding="utf-8")
@@ -290,7 +298,7 @@ def test_unreadable_history_folder_is_a_warning(live, isolated_history):
     isolated_history.mkdir(parents=True)
     isolated_history.chmod(0o000)
     try:
-        da.main(["an idea"])
+        da.main(["-vv", "an idea"])
     finally:
         isolated_history.chmod(0o700)
     assert "Could not save the report" in live.out.getvalue()
@@ -299,7 +307,7 @@ def test_unreadable_history_folder_is_a_warning(live, isolated_history):
 def test_control_characters_and_markdown_are_neutralized(live, isolated_history):
     nasty = "go \x1b[31mred\x1b[0m ![x](https://h.example/?q=[IP]) <img src=x>"
     live.claude.judge.queue = [judge_response({**VALID_JUDGE, "steelman": nasty})]
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     out = live.out.getvalue()
     [report] = saved_reports(isolated_history)
     text = report.read_text(encoding="utf-8")
@@ -308,16 +316,36 @@ def test_control_characters_and_markdown_are_neutralized(live, isolated_history)
     assert "!\\[x\\](https://h.example/?q=\\[IP\\]) &lt;img src=x&gt;" in text
 
 
+def test_literal_unicode_escapes_are_decoded(live, isolated_history):
+    escaped = r"La migraci\u00f3n \u001b[31m sin \ud83d"  # as a model sometimes writes it
+    live.claude.judge.queue = [judge_response({**VALID_JUDGE, "steelman": escaped})]
+    da.main(["-vv", "an idea"])
+    out = live.out.getvalue()
+    text = saved_reports(isolated_history)[0].read_text(encoding="utf-8")
+    assert "La migración [31m sin \\ud83d" in out and "La migración \\[31m sin \\ud83d" in text
+    assert "\x1b" not in out and "\x1b" not in text  # an escaped control character is still dropped
+
+
+def test_one_v_adds_objections_and_synthesis_but_not_costs(live, isolated_history, tmp_path):
+    (tmp_path / "config.toml").write_text('[prices]\n"claude-haiku-5-5" = { input = 1, output = 1 }\n', encoding="utf-8")
+    da.main(["-v", "--rounds", "1", "an idea"])
+    out = live.out.getvalue()
+    assert "Objections · Critic" in out and "Beam (top 3)" in out and "Steelman" in out
+    assert "some models have no price" in out  # short warning; the model list is -vv detail
+    for detail in ("Masking", "max calls", "Usage and cost", "calls:", "its cost is not counted"):
+        assert detail not in out
+
+
 def test_empty_ledger_skips_the_judge(live, isolated_history):
     live.claude.queue = [critic_response({"objections": []})]
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     assert live.claude.judge.requests == []
     assert "Judge was not called" in live.out.getvalue()
 
 
 def test_judge_model_from_config(live, isolated_history, tmp_path):
     (tmp_path / "config.toml").write_text('[models]\njudge = "claude-opus-5-5"\n', encoding="utf-8")
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     request = live.claude.judge.requests[0]
     assert request["model"] == "claude-opus-5-5" and "thinking" not in request
 
@@ -325,13 +353,13 @@ def test_judge_model_from_config(live, isolated_history, tmp_path):
 def test_save_failure_is_a_warning_not_a_crash(live, isolated_history):
     isolated_history.parent.mkdir(parents=True, exist_ok=True)
     isolated_history.write_text("a file where the folder should be", encoding="utf-8")
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     assert "Could not save the report" in live.out.getvalue()
 
 
 def test_report_location_hides_the_home_folder(live, monkeypatch, tmp_path):
     monkeypatch.setattr(da.Path, "home", classmethod(lambda cls: tmp_path))
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     assert str(tmp_path) not in live.out.getvalue().split("Report saved:")[1]
 
 
@@ -339,7 +367,7 @@ def test_dry_run_saves_a_simulated_report(monkeypatch, isolated_history, tmp_pat
     buf = io.StringIO()
     monkeypatch.setattr(da, "console", Console(file=buf, width=200, color_system=None))
     monkeypatch.setattr(da, "CONFIG_PATH", str(tmp_path / "config.toml"))
-    da.main(["--dry-run", "x"])
+    da.main(["-vv", "--dry-run", "x"])
     [report] = saved_reports(isolated_history)
     text = report.read_text(encoding="utf-8")
     assert text.startswith("# Devil's advocate report (simulated)") and "- Models: simulated" in text
@@ -348,7 +376,7 @@ def test_dry_run_saves_a_simulated_report(monkeypatch, isolated_history, tmp_pat
 
 def test_bidi_and_zero_width_characters_are_removed(live, isolated_history):
     live.claude.judge.queue = [judge_response({**VALID_JUDGE, "steelman": "a\u202eb\u200bc\u2066d"})]
-    da.main(["an idea"])
+    da.main(["-vv", "an idea"])
     [report] = saved_reports(isolated_history)
     for text in (live.out.getvalue(), report.read_text(encoding="utf-8")):
         assert not any(ch in text for ch in "\u202e\u200b\u2066")
