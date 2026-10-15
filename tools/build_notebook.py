@@ -1,10 +1,15 @@
 """Build the shareable notebook from devils_advocate.py.
 
 The .py keeps its comments and docstrings for review; the notebook drops them from the code cells and
-explains itself through its markdown cells. With --execute it runs top to bottom (dry-run, temporary
+explains itself through its markdown cells. Statements marked `# cli-only` (argparse, --configure) are
+left out of the notebook, which runs through notebook_run(). With --execute it runs top to bottom (dry-run, temporary
 HOME so nothing is written to the real home folder) and keeps the outputs as the example run.
 
     python tools/build_notebook.py [--execute]
+    python tools/build_notebook.py --execute --problem entrega/problema.md   # personal copy in entrega/
+
+--problem replaces the "**El problema.**" paragraph with a local file and writes the notebook to the
+gitignored entrega/ folder, so a personal text never reaches the committed notebook.
 """
 import argparse
 import ast
@@ -22,6 +27,8 @@ import nbformat
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "devils_advocate.py"
 TARGET = ROOT / "devils_advocate.ipynb"
+DELIVERY = ROOT / "entrega" / "devils_advocate.ipynb"
+PROBLEM = re.compile(r"\*\*El problema\.\*\*.*?(?=\n\n)", re.S)
 KERNELSPEC = {"name": "python3", "display_name": "Python 3", "language": "python"}
 
 
@@ -77,6 +84,23 @@ def checked_strip(code: str) -> str:
     return stripped
 
 
+CLI_ONLY = "# cli-only"
+
+
+def drop_cli_only(code: str) -> str:
+    """Remove each top-level statement preceded by a `# cli-only` line (and that line)."""
+    lines = code.splitlines()
+    starts = {n.lineno - 1: n.end_lineno for n in ast.parse(code).body}
+    drop: set[int] = set()
+    for i, line in enumerate(lines):
+        if line.strip() == CLI_ONLY:
+            nxt = next((j for j in range(i + 1, len(lines)) if lines[j].strip()), None)
+            if nxt not in starts:
+                raise ValueError(f"'{CLI_ONLY}' must come right before a top-level statement (line {i + 1})")
+            drop.update(range(i, starts[nxt]))
+    return "\n".join(line for i, line in enumerate(lines) if i not in drop) + "\n"
+
+
 def notebook_source(text: str) -> str:
     cells = []
     for cell in split_cells(text):
@@ -84,16 +108,30 @@ def notebook_source(text: str) -> str:
         if "[markdown]" in marker or not marker.startswith("# %%"):
             cells.append(cell.rstrip("\n") + "\n")
         else:
-            cells.append(marker + "\n" + checked_strip(body))
+            cells.append(marker + "\n" + checked_strip(drop_cli_only(body)))
     return "\n\n".join(c.rstrip("\n") for c in cells) + "\n"
 
 
-def build(execute: bool = False, target: Path = TARGET) -> nbformat.NotebookNode:
+def replace_problem(nb: nbformat.NotebookNode, text: str):
+    """Put a personal "El problema" paragraph in the intro cell (the committed notebook keeps the neutral one)."""
+    intro = nb.cells[0]
+    if not PROBLEM.search(intro.source):
+        raise ValueError("the first markdown cell has no '**El problema.**' paragraph")
+    text = text.strip()
+    if not text.startswith("**El problema.**"):
+        text = "**El problema.** " + text
+    intro.source = PROBLEM.sub(lambda _: text, intro.source, count=1)
+
+
+def build(execute: bool = False, target: Path = TARGET, problem: str | None = None) -> nbformat.NotebookNode:
     nb = jupytext.reads(notebook_source(SOURCE.read_text(encoding="utf-8")), fmt="py:percent")
+    if problem is not None:
+        replace_problem(nb, problem)
     nb.metadata["kernelspec"] = KERNELSPEC
     nb.metadata.pop("jupytext", None)
     if execute:
         run(nb)
+    target.parent.mkdir(parents=True, exist_ok=True)
     nbformat.write(nb, target)
     return nb
 
@@ -122,6 +160,9 @@ def run(nb: nbformat.NotebookNode, timeout: int = 120):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--execute", action="store_true", help="run it top to bottom (dry-run) and keep the outputs")
+    parser.add_argument("--problem", type=Path, help="personal 'El problema' paragraph; writes entrega/devils_advocate.ipynb")
     args = parser.parse_args()
-    build(execute=args.execute)
-    print(f"Wrote {TARGET.relative_to(ROOT)}", file=sys.stderr)
+    problem = args.problem.read_text(encoding="utf-8") if args.problem else None
+    target = DELIVERY if args.problem else TARGET
+    build(execute=args.execute, target=target, problem=problem)
+    print(f"Wrote {target.relative_to(ROOT)}", file=sys.stderr)

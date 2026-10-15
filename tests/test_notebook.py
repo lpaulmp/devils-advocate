@@ -3,6 +3,7 @@ source, and it runs top to bottom in dry-run without keys or writes to the real 
 import ast
 import os
 import re
+import sys
 
 import nbformat
 import pytest
@@ -74,8 +75,9 @@ def test_code_cells_compile_and_have_no_comments(notebook):
 
 def test_markdown_explains_what_the_spec_asks(notebook):
     text = markdown(notebook)
-    for needle in ("**The problem.**", "## Roles", "## Information flow", "## Rounds and pruning", "Week 3",
-                   "beam search", "A*", "## Cost control", "## Run"):
+    # The notebook explains itself in Spanish (the owner's delivery language).
+    for needle in ("**El problema.**", "## Roles", "## Flujo de información", "## Rondas y poda", "semana 3",
+                   "beam search", "A*", "## Control de costos", "## Ejecutar"):
         assert needle in text, needle
 
 
@@ -127,19 +129,19 @@ def test_notebook_run_asks_for_missing_keys_without_storing_them(monkeypatch, tm
         monkeypatch.setenv(var, "")  # records the variable so monkeypatch removes it after the test
         monkeypatch.delenv(var)
     monkeypatch.setattr(da.getpass, "getpass", lambda prompt: asked.append(prompt) or "typed-key")
-    monkeypatch.setattr(da, "main", lambda argv: ran.append(argv))
+    monkeypatch.setattr(da, "run_with_config", lambda *args, **kwargs: ran.append((args, kwargs)))
     da.notebook_run("an idea", rounds=1, budget=0.05, dry_run=False)
     assert len(asked) == 2 and all("not stored" in p for p in asked)
-    assert ran == [["--rounds", "1", "--budget", "0.05", "-vv", "--", "an idea"]]
+    assert ran == [(("an idea", 1, 0.05, False), {"verbosity": 2})]
     assert os.environ["ANTHROPIC_API_KEY"] == "typed-key"  # only in this process, never written anywhere
 
 
 def test_notebook_run_dry_run_never_asks_for_keys(monkeypatch):
     monkeypatch.setattr(da.getpass, "getpass", lambda prompt: pytest.fail("asked for a key in dry-run"))
     ran = []
-    monkeypatch.setattr(da, "main", lambda argv: ran.append(argv))
+    monkeypatch.setattr(da, "run_with_config", lambda *args, **kwargs: ran.append((args, kwargs)))
     da.notebook_run("an idea")
-    assert ran == [["--rounds", "1", "--budget", "0.1", "--dry-run", "-vv", "--", "an idea"]]
+    assert ran == [(("an idea", 1, 0.1, True), {"verbosity": 2})]
 
 
 def test_notebook_run_turns_exits_into_a_message(monkeypatch):
@@ -149,10 +151,10 @@ def test_notebook_run_turns_exits_into_a_message(monkeypatch):
     buf = io.StringIO()
     monkeypatch.setattr(da, "console", Console(file=buf, width=200, color_system=None))
 
-    def stop(argv):
+    def stop(*args, **kwargs):
         raise SystemExit(2)
 
-    monkeypatch.setattr(da, "main", stop)
+    monkeypatch.setattr(da, "run_with_config", stop)
     da.notebook_run("an idea")  # does not raise in the notebook
     assert "Stopped (exit code 2)." in buf.getvalue()
 
@@ -180,6 +182,79 @@ def test_idea_starting_with_a_dash_is_not_an_option(monkeypatch, tmp_path):
     monkeypatch.setattr(da, "CONFIG_PATH", str(tmp_path / "config.toml"))
     da.notebook_run("-tabs-vs-spaces")
     assert "Global verdict (simulated)" in buf.getvalue()
+
+
+@pytest.mark.parametrize("idea, rounds, budget", [("  ", 1, 0.1), ("x", 4, 0.1), ("x", 1, 0), ("x", 1, float("inf")), ("x", 1, "0.1")])
+def test_notebook_run_rejects_bad_variables(monkeypatch, idea, rounds, budget):
+    import io
+    from rich.console import Console
+
+    buf = io.StringIO()
+    monkeypatch.setattr(da, "console", Console(file=buf, width=200, color_system=None))
+    monkeypatch.setattr(da, "run", lambda *a, **k: pytest.fail("ran with bad variables"))
+    da.notebook_run(idea, rounds, budget)
+    assert "Stopped (exit code 2)." in buf.getvalue()
+
+
+def test_cli_only_code_is_left_out_of_the_notebook(notebook):
+    code = "\n".join(c.source for c in code_cells(notebook))
+    for name in ("def main", "def parse_args", "def configure", "CONFIG_TEMPLATE", "def read_idea", "def positive_float"):
+        assert name not in code
+    assert "def notebook_run" in code and "def run_with_config" in code
+
+
+def test_notebook_run_takes_keys_from_colab_secrets(monkeypatch):
+    import types
+
+    asked, ran = [], []
+    monkeypatch.setattr(da.keyring, "get_password", lambda service, user: None)
+    for var in ("ANTHROPIC_API_KEY", "XAI_API_KEY"):
+        monkeypatch.setenv(var, "")
+        monkeypatch.delenv(var)
+    secrets = {"ANTHROPIC_API_KEY": "from-colab"}  # the xAI one is missing: fall back to getpass
+    userdata = types.SimpleNamespace(get=lambda name: secrets[name])  # KeyError like a missing secret
+    colab = types.ModuleType("google.colab")
+    colab.userdata = userdata
+    monkeypatch.setitem(sys.modules, "google", types.ModuleType("google"))
+    monkeypatch.setitem(sys.modules, "google.colab", colab)
+    monkeypatch.setattr(da.getpass, "getpass", lambda prompt: asked.append(prompt) or "typed-key")
+    monkeypatch.setattr(da, "run_with_config", lambda *args, **kwargs: ran.append(args))
+    da.notebook_run("an idea", dry_run=False)
+    assert os.environ["ANTHROPIC_API_KEY"] == "from-colab" and os.environ["XAI_API_KEY"] == "typed-key"
+    assert len(asked) == 1 and "xai" in asked[0] and ran
+
+
+def test_colab_secret_is_none_outside_colab(monkeypatch):
+    monkeypatch.delitem(sys.modules, "google.colab", raising=False)
+    assert da.colab_secret("ANTHROPIC_API_KEY") is None
+
+
+def test_install_cell_runs_only_in_colab(notebook):
+    first_code = code_cells(notebook)[0].source
+    assert 'if "google.colab" in sys.modules:' in first_code and "pip" in first_code
+    assert "import argparse" not in "\n".join(c.source for c in code_cells(notebook))
+
+
+def test_personal_problem_goes_only_to_the_delivery_copy(tmp_path):
+    target = tmp_path / "entrega" / "devils_advocate.ipynb"
+    nb = bn.build(target=target, problem="Mi texto personal.\n")
+    intro = nb.cells[0].source
+    assert "**El problema.** Mi texto personal." in intro and "es fácil ver los pros" not in intro
+    assert "## Roles" in intro  # the rest of the intro is kept
+    assert target.exists()
+
+
+def test_delivery_folder_is_gitignored():
+    import subprocess
+    out = subprocess.run(["git", "check-ignore", "entrega/devils_advocate.ipynb", "entrega/problema.md"],
+                         cwd=bn.ROOT, capture_output=True, text=True)
+    assert out.stdout.split() == ["entrega/devils_advocate.ipynb", "entrega/problema.md"]
+
+
+def test_cli_only_marker_must_precede_a_statement():
+    with pytest.raises(ValueError, match="cli-only"):
+        bn.drop_cli_only("x = 1\n    # cli-only\n")
+    assert bn.drop_cli_only("a = 1\n# cli-only\ndef f():\n    return 2\nb = 3\n") == "a = 1\nb = 3\n"
 
 
 def test_spec_command_notebook_runs_top_to_bottom():

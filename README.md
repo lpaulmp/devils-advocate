@@ -53,7 +53,7 @@ Before each call the tool estimates its worst-case cost (estimated input plus th
 Also set a spend limit on console.anthropic.com and turn auto top-up **off** on console.x.ai.
 
 ### Notebook
-`devils_advocate.ipynb` is generated from `devils_advocate.py`: the same code without comments or docstrings, explained by its markdown cells, with an example (simulated) run. Open it, edit the variables in the last cells (`IDEA`, `ROUNDS`, `BUDGET`, `DRY_RUN`) and run all cells. With `DRY_RUN = False` it asks for any missing API key without showing or storing it. To rebuild it after changing the code:
+`devils_advocate.ipynb` is generated from `devils_advocate.py`: the same code without comments, docstrings or the command-line-only parts (marked `# cli-only`), explained in Spanish by its markdown cells, with an example (simulated) run. It runs in Google Colab: the first code cell installs the dependencies there, and keys can come from Colab's Secrets (`ANTHROPIC_API_KEY`, `XAI_API_KEY`). Open it, edit the variables in the last cells (`IDEA`, `ROUNDS`, `BUDGET`, `DRY_RUN`) and run all cells. With `DRY_RUN = False` it asks for any missing API key (Colab Secrets first) without showing or storing it. To rebuild it after changing the code:
 ```bash
 python tools/build_notebook.py --execute
 ```
@@ -122,7 +122,7 @@ Los precios **no** vienen incluidos: cópialos (USD por millón de tokens) de la
 Pon también un límite de gasto en console.anthropic.com y desactiva la recarga automática en console.x.ai.
 
 ### Notebook
-`devils_advocate.ipynb` se genera a partir de `devils_advocate.py`: el mismo código sin comentarios ni docstrings, explicado en sus celdas markdown, con una ejecución de ejemplo (simulada). Ábrelo, cambia las variables de las últimas celdas (`IDEA`, `ROUNDS`, `BUDGET`, `DRY_RUN`) y ejecuta todas las celdas. Con `DRY_RUN = False` pide las claves que falten sin mostrarlas ni guardarlas. Para regenerarlo tras cambiar el código: `python tools/build_notebook.py --execute`.
+`devils_advocate.ipynb` se genera a partir de `devils_advocate.py`: el mismo código sin comentarios, docstrings ni las partes exclusivas de la línea de comandos (marcadas `# cli-only`), explicado en español en sus celdas markdown, con una ejecución de ejemplo (simulada). Funciona en Google Colab: allí la primera celda de código instala las dependencias, y las claves pueden venir de los *Secrets* de Colab (`ANTHROPIC_API_KEY`, `XAI_API_KEY`). Ábrelo, cambia las variables de las últimas celdas (`IDEA`, `ROUNDS`, `BUDGET`, `DRY_RUN`) y ejecuta todas las celdas. Con `DRY_RUN = False` pide las claves que falten (primero en los Secrets de Colab) sin mostrarlas ni guardarlas. Para regenerarlo tras cambiar el código: `python tools/build_notebook.py --execute`.
 
 ### Cómo se ordenan las objeciones
 Cada objeción recibe dos notas del 1 al 5:
